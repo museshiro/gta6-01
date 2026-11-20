@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>SOLMAR HEAT — an open-world crime story</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0e1420; }
+  #game { display: block; touch-action: none; cursor: crosshair; }
+  #fallback { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    color: #fff; font: 16px sans-serif; text-align: center; padding: 24px; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="fallback">SOLMAR HEAT needs JavaScript and a desktop browser to play.</div>
+<script>document.getElementById('fallback').style.display = 'none';</script>
+<script src="src/utils.js"></script>
+<script src="src/audio.js"></script>
+<script src="src/input.js"></script>
+<script src="src/city.js"></script>
+<script src="src/player.js"></script>
+<script src="src/vehicles.js"></script>
+<script src="src/pedestrians.js"></script>
+<script src="src/police.js"></script>
+<script src="src/missions.js"></script>
+<script src="src/render.js"></script>
+<script src="src/hud.js"></script>
+<script src="src/shots.js"></script>
+<script src="src/main.js"></script>
+</body>
+</html>
