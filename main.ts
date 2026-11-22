@@ -1,10 +1,15 @@
-// SOLMAR HEAT — entrypoint (Node 22, standard library only).
+// SOLMAR HEAT 3D — entrypoint (Node 22, standard library only).
 // Copies the static game and the screenshots into the output directory,
 // then writes the dossier that buildDossier derives from them. The
 // scorer rebuilds the same dossier from the same files, so the two
 // must match byte for byte. Nothing here fetches anything: the game is
 // fully static and every asset it needs already lives under game/.
-
+// v3: the game is now hand-written WebGL 3D (render3d.js) with the 2D
+// canvas renderer kept as a fallback, 10 story missions, named SMPD
+// units, a weapon wheel, garage upgrades, 3 save slots, radio, respect
+// ranks and a day/night clock — all still plain files, no build step.
+// The input system snapshots presses per frame (input.js beginFrame),
+// so a key tapped during a slow render is never lost.
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { buildDossier } from './vendor/makefun-game.ts';

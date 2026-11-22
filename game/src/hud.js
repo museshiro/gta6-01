@@ -1,7 +1,9 @@
-// SOLMAR HEAT — hud.js
+// SOLMAR HEAT 3D — hud.js
 // Everything on screen that is not the world: health, cash, wanted stars,
-// ammo, speed, the minimap, mission objectives, toasts, and every menu —
-// start screen, pause, mission briefings, busted/wasted, and the ending.
+// ammo, speed, the minimap, mission objectives, district + clock + respect,
+// the weapon wheel, toasts, and every menu — start screen with 3 save
+// slots, pause with district standing, mission briefings, the garage
+// upgrade dialog, busted/wasted, and the ending.
 function createHud(G) {
   const ctx = G.ctx;
   const toasts = [];
@@ -17,6 +19,7 @@ function createHud(G) {
   }
   function closeDialog() {
     dialog = null;
+    G.garageOpen = false;
     if (G.state === 'dialog') G.state = 'playing';
   }
 
@@ -55,6 +58,11 @@ function createHud(G) {
     ctx.fillRect(x + G.city.water.x * sx, y, G.city.water.w * sx, mh);
     ctx.fillStyle = '#e8d5a0';
     ctx.fillRect(x + G.city.beach.x * sx, y, G.city.beach.w * sx, mh);
+    // Volcano on the minimap.
+    ctx.fillStyle = '#5a3a28';
+    ctx.beginPath(); ctx.arc(x + G.city.volcano.x * sx, y + G.city.volcano.y * sy, 7, 0, U.TAU); ctx.fill();
+    ctx.fillStyle = '#ff5a3a';
+    ctx.beginPath(); ctx.arc(x + G.city.volcano.x * sx, y + G.city.volcano.y * sy, 3, 0, U.TAU); ctx.fill();
     // Roads.
     ctx.strokeStyle = '#3d3a38';
     ctx.lineWidth = 3;
@@ -88,6 +96,12 @@ function createHud(G) {
         ctx.beginPath(); ctx.arc(x + car.x * sx, y + car.y * sy, 3.5, 0, U.TAU); ctx.fill();
       }
     }
+    // CONDOR-1 blip.
+    const heli = G.police.heli;
+    if (heli && heli.active) {
+      ctx.fillStyle = '#ffd34d';
+      ctx.beginPath(); ctx.arc(x + heli.x * sx, y + heli.y * sy, 4.5, 0, U.TAU); ctx.fill();
+    }
     // Player arrow.
     const pl = G.player;
     ctx.save();
@@ -111,7 +125,7 @@ function createHud(G) {
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.font = 'bold 11px sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText('SOLMAR CITY', x, y + mh + 20);
+    ctx.fillText('ISLA SOLMAR', x, y + mh + 20);
   }
 
   function drawBar(x, y, w, h, frac, color, bg) {
@@ -123,28 +137,38 @@ function createHud(G) {
 
   function drawHud() {
     const pl = G.player;
-    // Top-left block: stars, health, cash, ammo.
+    // Top-left block: stars, health, cash, weapon, respect, district, clock.
     ctx.textAlign = 'left';
     drawStars(16, 34);
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    rr(14, 44, 220, 62, 8);
+    rr(14, 44, 220, 84, 8);
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 13px sans-serif';
-    ctx.fillText('LEO MARÍN', 24, 62);
+    ctx.fillText('LEO MARÍN  ·  ' + G.missions.respectName(), 24, 62);
     drawBar(24, 68, 140, 10, pl.hp / pl.maxHp, pl.hp > 35 ? '#3fce62' : '#ff5a5a');
     ctx.fillStyle = '#3fce62';
     ctx.font = 'bold 16px sans-serif';
     ctx.fillText(U.money(pl.cash), 172, 79);
-    if (pl.hasPistol) {
-      ctx.fillStyle = '#ffd34d';
-      ctx.font = '13px sans-serif';
-      ctx.fillText('▸ Pistol  ' + pl.ammo, 24, 98);
-    }
+    ctx.fillStyle = '#ffd34d';
+    ctx.font = '13px sans-serif';
+    const wname = pl.weapon === 'fist' ? 'Fist' : pl.weapon === 'pistol' ? 'Pistol' : pl.weapon === 'smg' ? 'SMG' : 'Shotgun';
+    ctx.fillText('▸ ' + wname + (pl.weapon === 'fist' ? '' : '  ' + pl.ammo), 24, 98);
     if (pl.inCar) {
       ctx.fillStyle = '#ffffff';
       ctx.font = '13px sans-serif';
-      ctx.fillText('▸ ' + pl.inCar.name + (pl.inCar.hp < 45 ? '  — SMOKING' : ''), 24, 98);
+      ctx.fillText('▸ ' + pl.inCar.name + (pl.inCar.hp < 45 ? '  — SMOKING' : ''), 24, 116);
+      if (pl.upgrades.nitro) {
+        ctx.fillStyle = pl.nitroCd <= 0 ? '#7df9ff' : '#888888';
+        ctx.fillText(pl.nitroCd <= 0 ? '▸ NITRO ready (Shift)' : '▸ NITRO ' + Math.ceil(pl.nitroCd) + 's', 140, 116);
+      }
     }
+    // District + clock (top center, under the objective).
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.textAlign = 'center';
+    const mins = G.clockMin || 600;
+    const day = mins >= 360 && mins < 1080;
+    ctx.fillText(G.city.districtAt(pl.x, pl.y).toUpperCase() + '   ·   ' + (day ? '☀ ' : '☾ ') + U.clock(mins) + '   ·   ' + G.audio.stationName(), G.viewW / 2, 56);
     // Speed when driving.
     if (pl.inCar) {
       const kmh = Math.round(Math.abs(pl.inCar.speed) * 0.32);
@@ -160,7 +184,7 @@ function createHud(G) {
     }
     // Mission objective (top center).
     const obj = G.missions.objective;
-    if (obj && G.missions.idx >= 0 && G.missions.idx < 5) {
+    if (obj && G.missions.idx >= 0 && G.missions.idx < 10) {
       ctx.font = 'bold 14px sans-serif';
       const w = ctx.measureText(obj).width + 28;
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
@@ -190,8 +214,74 @@ function createHud(G) {
       ctx.fillStyle = 'rgba(255,255,255,0.75)';
       ctx.font = '12px sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText('WASD move/drive · E enter car · Space punch · Click shoot · Shift run · M mute · P pause', 16, G.viewH - 14);
+      ctx.fillText('WASD move/drive · E enter car · Space punch · Click shoot · Q weapon wheel · R radio · Shift run/nitro · M mute · P pause', 16, G.viewH - 14);
     }
+    // Weapon wheel overlay.
+    if (G.wheelOpen) drawWheel();
+    // 3D landmark labels (projected from the WebGL camera).
+    if (G.renderer && G.renderer.project) drawLabels();
+  }
+
+  // Landmark name chips projected from the 3D camera onto the 2D HUD.
+  function drawLabels() {
+    const L = G.city.landmarks;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 12px sans-serif';
+    for (const key of Object.keys(L)) {
+      const b = L[key];
+      if (!b) continue;
+      const c = G.city.buildingCenter(b);
+      const s = G.renderer.project(c.x, (b.h || 10) * 6 + 20, c.y);
+      if (!s || s.x < -40 || s.x > G.viewW + 40 || s.y < -20 || s.y > G.viewH + 20) continue;
+      // Keep labels off the HUD: top band (objective/clock), the top-left
+      // status panel, and the minimap.
+      if (s.y < 110) continue;
+      if (s.x < 260 && s.y < 150) continue;
+      if (s.x > G.viewW - 240 && s.y < 210) continue;
+      const w = ctx.measureText(b.name).width + 16;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      rr(s.x - w / 2, s.y - 11, w, 20, 6);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText('★ ' + b.name, s.x, s.y + 3);
+    }
+  }
+
+  // Radial weapon wheel: 4 slots, mouse angle or number keys pick.
+  function drawWheel() {
+    const pl = G.player;
+    const cx = G.viewW / 2, cy = G.viewH / 2, R = 130;
+    ctx.fillStyle = 'rgba(5,8,16,0.55)';
+    ctx.fillRect(0, 0, G.viewW, G.viewH);
+    const slots = [
+      { key: 'fist', label: '1  FIST', sub: 'always ready' },
+      { key: 'pistol', label: '2  PISTOL', sub: pl.weapons.pistol.owned ? pl.weapons.pistol.ammo + ' rounds' : 'locked — job 3' },
+      { key: 'smg', label: '3  SMG', sub: pl.weapons.smg.owned ? pl.weapons.smg.ammo + ' rounds' : 'locked — job 8' },
+      { key: 'shotgun', label: '4  SHOTGUN', sub: pl.weapons.shotgun.owned ? pl.weapons.shotgun.ammo + ' shells' : 'locked — $800 garage' },
+    ];
+    slots.forEach((s, i) => {
+      const a = -Math.PI / 2 + i * (Math.PI / 2);
+      const x = cx + Math.cos(a) * R, y = cy + Math.sin(a) * R;
+      const owned = pl.weapons[s.key].owned;
+      const sel = G.wheelSel === i;
+      ctx.fillStyle = sel ? 'rgba(255,211,77,0.9)' : owned ? 'rgba(20,28,44,0.9)' : 'rgba(20,28,44,0.45)';
+      ctx.beginPath(); ctx.arc(x, y, 52, 0, U.TAU); ctx.fill();
+      ctx.strokeStyle = sel ? '#ffffff' : 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = sel ? 3 : 1.5;
+      ctx.beginPath(); ctx.arc(x, y, 52, 0, U.TAU); ctx.stroke();
+      ctx.fillStyle = sel ? '#111111' : owned ? '#ffffff' : '#888888';
+      ctx.font = 'bold 14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(s.label, x, y - 2);
+      ctx.font = '11px sans-serif';
+      ctx.fillText(s.sub, x, y + 16);
+    });
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('WEAPON WHEEL', cx, cy - 190);
+    ctx.font = '13px sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.fillText('Click a slot or press 1–4 · Q to close', cx, cy + 200);
   }
 
   function drawMenu() {
@@ -223,21 +313,36 @@ function createHud(G) {
     ctx.font = 'bold 84px sans-serif';
     ctx.shadowColor = 'rgba(0,0,0,0.45)';
     ctx.shadowBlur = 18;
-    ctx.fillText('SOLMAR', cx, cy - 96);
+    ctx.fillText('SOLMAR', cx, cy - 116);
     ctx.fillStyle = '#ffd34d';
-    ctx.fillText('HEAT', cx, cy - 8);
+    ctx.fillText('HEAT 3D', cx, cy - 28);
     ctx.shadowBlur = 0;
     ctx.fillStyle = '#ffe9c9';
     ctx.font = '20px sans-serif';
-    ctx.fillText('An open-world crime story — steal, drive, run, and pay off the debt.', cx, cy + 36);
+    ctx.fillText('Ten jobs on volcanic Isla Solmar — steal, drive, run, and pay off the debt.', cx, cy + 16);
     ctx.font = '15px sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillText('WASD move / drive · E enter or steal a car · Space punch · Click to shoot', cx, cy + 72);
-    ctx.fillText('Shift run · M mute · P pause · progress saves automatically', cx, cy + 96);
-    const hasSave = !!G.loadSaveData();
+    ctx.fillText('Hand-written WebGL 3D · 10 story missions · SMPD RAM / PIT / CONDOR-1 · weapon wheel · garage · radio · respect ranks', cx, cy + 48);
+    ctx.fillText('WASD move / drive · E enter or steal a car · Space punch · Click to shoot · Q weapon wheel · R radio', cx, cy + 72);
+    // Save slots.
+    const saves = G.listSaves();
+    ctx.font = 'bold 15px sans-serif';
+    ctx.fillStyle = '#ffd34d';
+    ctx.fillText('SAVE SLOTS — press 1, 2 or 3 to pick', cx, cy + 112);
+    ctx.font = '14px sans-serif';
+    saves.forEach((s, i) => {
+      const sel = G.saveSlot === i;
+      const label = s
+        ? 'Slot ' + (i + 1) + ' — Job ' + (s.mission + 1) + '/10 · ' + U.money(s.cash) + ' · ' + s.respect + ' · ' + new Date(s.time).toLocaleDateString()
+        : 'Slot ' + (i + 1) + ' — empty';
+      ctx.fillStyle = sel ? '#ffd34d' : 'rgba(255,255,255,0.75)';
+      ctx.font = (sel ? 'bold ' : '') + '15px sans-serif';
+      ctx.fillText((sel ? '▶ ' : '    ') + label, cx, cy + 138 + i * 24);
+    });
+    const hasSave = !!saves[G.saveSlot];
     ctx.font = 'bold 22px sans-serif';
     ctx.fillStyle = '#ffd34d';
-    ctx.fillText(hasSave ? '▶  Press ENTER — Continue (save found)' : '▶  Press ENTER — New Game', cx, cy + 152);
+    ctx.fillText(hasSave ? '▶  Press ENTER — Continue' : '▶  Press ENTER — New Game', cx, cy + 228);
     ctx.font = '13px sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,0.65)';
     ctx.fillText('A wholly original game. No Rockstar / GTA names, art, music or assets.', cx, G.viewH - 24);
@@ -250,13 +355,22 @@ function createHud(G) {
     ctx.textAlign = 'center';
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 44px sans-serif';
-    ctx.fillText('PAUSED', G.viewW / 2, G.viewH / 2 - 70);
+    ctx.fillText('PAUSED', G.viewW / 2, G.viewH / 2 - 90);
     ctx.font = '17px sans-serif';
     ctx.fillStyle = '#e8e8e8';
-    ctx.fillText('P / Esc — resume', G.viewW / 2, G.viewH / 2 - 20);
-    ctx.fillText('S — save game', G.viewW / 2, G.viewH / 2 + 8);
-    ctx.fillText('M — mute sound', G.viewW / 2, G.viewH / 2 + 36);
-    ctx.fillText('Q — quit to menu', G.viewW / 2, G.viewH / 2 + 64);
+    ctx.fillText('P / Esc — resume', G.viewW / 2, G.viewH / 2 - 40);
+    ctx.fillText('S — save game (slot ' + (G.saveSlot + 1) + ')', G.viewW / 2, G.viewH / 2 - 12);
+    ctx.fillText('M — mute sound', G.viewW / 2, G.viewH / 2 + 16);
+    ctx.fillText('Q — quit to menu', G.viewW / 2, G.viewH / 2 + 44);
+    ctx.fillStyle = '#ffd34d';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.fillText('Respect: ' + G.missions.respectName() + '  ·  Jobs done: ' + G.missions.completed + '/10', G.viewW / 2, G.viewH / 2 + 84);
+    ctx.fillStyle = '#e8e8e8';
+    ctx.font = '14px sans-serif';
+    const st = G.missions.standing;
+    ctx.fillText('District standing — Downtown ' + st.Downtown + ' · Docks ' + st['The Docks'] + ' · Palm Court ' + st['Palm Court'] + ' · Ember Hills ' + st['Ember Hills'] + ' · Beach ' + st['Solmar Beach'], G.viewW / 2, G.viewH / 2 + 110);
+    const up = G.player.upgrades;
+    ctx.fillText('Garage — Engine Lv' + up.engine + '/3 · Armor Lv' + up.armor + '/2 · Nitro ' + (up.nitro ? 'owned' : 'not owned'), G.viewW / 2, G.viewH / 2 + 134);
   }
 
   function drawDialog() {
@@ -265,11 +379,12 @@ function createHud(G) {
     ctx.fillRect(0, 0, G.viewW, G.viewH);
     const w = Math.min(620, G.viewW - 80);
     const x = (G.viewW - w) / 2, y = G.viewH / 2 - 110;
+    const h = 30 + dialog.lines.length * 26 + 44;
     ctx.fillStyle = 'rgba(12,16,28,0.95)';
-    rr(x, y, w, 150 + dialog.lines.length * 0, 12);
+    rr(x, y, w, h, 12);
     ctx.strokeStyle = '#ffd34d';
     ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.roundRect(x, y, w, 30 + dialog.lines.length * 26 + 44, 12); ctx.stroke();
+    ctx.beginPath(); ctx.roundRect(x, y, w, h, 12); ctx.stroke();
     ctx.fillStyle = '#ffd34d';
     ctx.font = 'bold 18px sans-serif';
     ctx.textAlign = 'left';
@@ -280,7 +395,7 @@ function createHud(G) {
     ctx.fillStyle = '#ffd34d';
     ctx.font = 'bold 15px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Press E to continue', G.viewW / 2, y + 62 + dialog.lines.length * 26 + 16);
+    ctx.fillText(G.garageOpen ? 'Press 1 / 2 / 3 to buy · E to leave' : 'Press E to continue', G.viewW / 2, y + 62 + dialog.lines.length * 26 + 16);
   }
 
   function drawOverlay(title, sub, color) {
@@ -307,11 +422,11 @@ function createHud(G) {
     ctx.fillText('DEBT PAID.', G.viewW / 2, G.viewH / 2 - 60);
     ctx.fillStyle = '#ffffff';
     ctx.font = '20px sans-serif';
-    ctx.fillText('Leo walked out of the Reserve with the cash and walked', G.viewW / 2, G.viewH / 2 - 8);
-    ctx.fillText('back into the sun. Kroll is square. Solmar is his.', G.viewW / 2, G.viewH / 2 + 22);
+    ctx.fillText('Leo walked out of the Summit with the package and walked', G.viewW / 2, G.viewH / 2 - 8);
+    ctx.fillText('back into the sun. Kroll is square. Isla Solmar is his.', G.viewW / 2, G.viewH / 2 + 22);
     ctx.fillStyle = '#9fe8b0';
     ctx.font = '17px sans-serif';
-    ctx.fillText('Free roam unlocked — keep the city. Thanks for playing SOLMAR HEAT.', G.viewW / 2, G.viewH / 2 + 66);
+    ctx.fillText('Free roam unlocked — keep the island. Thanks for playing SOLMAR HEAT 3D.', G.viewW / 2, G.viewH / 2 + 66);
     ctx.fillStyle = '#ffd34d';
     ctx.font = 'bold 17px sans-serif';
     ctx.fillText('Press ENTER to keep playing', G.viewW / 2, G.viewH / 2 + 112);

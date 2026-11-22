@@ -1,7 +1,17 @@
-// SOLMAR HEAT — player.js
+// SOLMAR HEAT 3D — player.js
 // Leo Marín, the player. On foot he walks, runs, punches and shoots; near a
 // car he can steal it and drive. Holds health, cash, ammo and the wanted
 // consequences of dying or getting busted are handled by the main loop.
+// Weapons: Fist, Pistol, SMG (auto, mission 3) and Shotgun (garage, $800),
+// switched with the Q weapon wheel. Garage upgrades live here too:
+// engine levels, armor levels and nitro (Shift while driving).
+const WEAPONS = {
+  fist: { name: 'Fist', cd: 0.38, dmg: 18, pellets: 1, spread: 0, auto: false },
+  pistol: { name: 'Pistol', cd: 0.28, dmg: 34, pellets: 1, spread: 0, auto: false },
+  smg: { name: 'SMG', cd: 0.09, dmg: 12, pellets: 1, spread: 0.09, auto: true },
+  shotgun: { name: 'Shotgun', cd: 0.85, dmg: 14, pellets: 5, spread: 0.22, auto: false },
+};
+
 function createPlayer(G) {
   const p = {
     x: 0, y: 0, angle: -Math.PI / 2, speed: 0,
@@ -10,12 +20,47 @@ function createPlayer(G) {
     inCar: null, // car object when driving, else null
     punchCd: 0, shootCd: 0, hurtCd: 0, dead: false,
     walkPhase: 0, moving: false,
+    // Weapon wheel state.
+    weapon: 'fist',
+    weapons: {
+      fist: { owned: true, ammo: Infinity },
+      pistol: { owned: false, ammo: 0 },
+      smg: { owned: false, ammo: 0 },
+      shotgun: { owned: false, ammo: 0 },
+    },
+    // Garage upgrades (Nadia's Garage): engine 0-3, armor 0-2, nitro bool.
+    upgrades: { engine: 0, armor: 0, nitro: false },
+    nitroT: 0, nitroCd: 0,
   };
 
   function reset(x, y) {
     p.x = x; p.y = y; p.angle = -Math.PI / 2; p.speed = 0;
     p.hp = p.maxHp; p.inCar = null; p.dead = false;
     p.punchCd = 0; p.shootCd = 0; p.hurtCd = 0;
+    p.nitroT = 0; p.nitroCd = 0;
+  }
+
+  function grantWeapon(kind, ammo) {
+    const w = p.weapons[kind];
+    if (!w) return;
+    w.owned = true;
+    if (ammo) w.ammo += ammo;
+    if (kind === 'pistol') { p.hasPistol = true; }
+    p.weapon = kind;
+    syncAmmo();
+  }
+  function syncAmmo() {
+    const w = p.weapons[p.weapon];
+    p.ammo = w && isFinite(w.ammo) ? w.ammo : 0;
+    if (p.weapon === 'pistol') p.hasPistol = p.weapons.pistol.owned;
+  }
+  function selectWeapon(kind) {
+    if (!p.weapons[kind] || !p.weapons[kind].owned) return false;
+    p.weapon = kind;
+    p.shootCd = Math.max(p.shootCd, 0.15);
+    syncAmmo();
+    G.hud.toast(WEAPONS[kind].name + ' equipped');
+    return true;
   }
 
   function moveOnFoot(dt) {
@@ -36,8 +81,8 @@ function createPlayer(G) {
       p.angle = Math.atan2(my, mx);
       p.walkPhase += dt * (run > 1 ? 13 : 9);
     }
-    // Aim with the mouse when the pistol is out.
-    if (p.hasPistol && G.input.mouse.x !== undefined) {
+    // Aim with the mouse when a gun is out.
+    if (p.weapon !== 'fist' && G.input.mouse.x !== undefined) {
       const m = G.screenToWorld(G.input.mouse.x, G.input.mouse.y);
       p.angle = Math.atan2(m.y - p.y, m.x - p.x);
     }
@@ -80,52 +125,59 @@ function createPlayer(G) {
     }
   }
 
+  // One trigger pull for the current weapon (SMG fires while held).
   function shoot() {
-    if (p.shootCd > 0 || p.inCar || !p.hasPistol) return;
-    if (p.ammo <= 0) { G.hud.toast('Out of ammo — find a stash'); G.audio.click(); p.shootCd = 0.3; return; }
-    p.shootCd = 0.28;
-    p.ammo--;
+    if (p.shootCd > 0 || p.inCar || p.weapon === 'fist') return;
+    const spec = WEAPONS[p.weapon];
+    const w = p.weapons[p.weapon];
+    if (w.ammo <= 0) { G.hud.toast('Out of ammo — find a stash'); G.audio.click(); p.shootCd = 0.3; return; }
+    p.shootCd = spec.cd;
+    w.ammo--;
+    syncAmmo();
     G.audio.shot();
     const m = G.screenToWorld(G.input.mouse.x, G.input.mouse.y);
     const aim = Math.atan2(m.y - p.y, m.x - p.x);
     const gx = p.x + Math.cos(aim) * 30, gy = p.y + Math.sin(aim) * 30;
     G.addParticles(gx, gy, 4, '#ffe08a');
     G.muzzle = { x: gx, y: gy, a: aim, t: 0.07 };
-    // Find the nearest hittable entity roughly along the aim line.
-    let best = null, bestD = 420;
-    const consider = (e, kind) => {
-      const d = U.dist(p.x, p.y, e.x, e.y);
-      if (d > bestD) return;
-      const a = Math.abs(U.angleDiff(aim, Math.atan2(e.y - p.y, e.x - p.x)));
-      if (a < 0.22 + 26 / Math.max(d, 40)) { best = { e, kind }; bestD = d; }
-    };
-    for (const ped of G.peds.list) if (ped.state !== 'down') consider(ped, 'ped');
-    for (const cop of G.police.cops) consider(cop, 'cop');
-    for (const car of G.vehicles.cars) {
-      if (car.driver === 'player') continue;
-      consider(car, 'car');
-    }
-    if (best) {
-      const e = best.e;
-      if (best.kind === 'car') {
-        e.hp -= 34;
-        G.addParticles(e.x, e.y, 8, '#ffb347');
-        if (e.hp <= 0) G.vehicles.disableCar(e);
-        else G.police.addHeat(10, 'fired at a car');
-      } else {
-        e.hp -= 34;
-        G.addParticles(e.x, e.y, 8, '#ff5a5a');
-        if (e.hp <= 0) {
-          e.state = 'down'; e.downT = 3;
-          if (best.kind === 'ped') { G.police.addHeat(35, 'shot a pedestrian'); G.spawnPickup(e.x, e.y, 'cash', U.randi(15, 50)); }
-          if (best.kind === 'cop') G.police.addHeat(40, 'shot an officer');
-        } else {
-          e.state = 'flee'; e.fleeT = 3;
-          if (best.kind === 'cop') G.police.addHeat(15, 'fired at police');
-        }
+    // Pellets spread around the aim line; each finds its own nearest target.
+    for (let pi = 0; pi < spec.pellets; pi++) {
+      const a2 = aim + U.rand(-spec.spread, spec.spread);
+      let best = null, bestD = 420;
+      const consider = (e, kind) => {
+        const d = U.dist(p.x, p.y, e.x, e.y);
+        if (d > bestD) return;
+        const a = Math.abs(U.angleDiff(a2, Math.atan2(e.y - p.y, e.x - p.x)));
+        if (a < 0.22 + 26 / Math.max(d, 40)) { best = { e, kind }; bestD = d; }
+      };
+      for (const ped of G.peds.list) if (ped.state !== 'down') consider(ped, 'ped');
+      for (const cop of G.police.cops) consider(cop, 'cop');
+      for (const car of G.vehicles.cars) {
+        if (car.driver === 'player') continue;
+        consider(car, 'car');
       }
-    } else {
-      G.police.addHeat(6, 'fired a gun');
+      if (best) {
+        const e = best.e;
+        if (best.kind === 'car') {
+          e.hp -= spec.dmg;
+          G.addParticles(e.x, e.y, 8, '#ffb347');
+          if (e.hp <= 0) G.vehicles.disableCar(e);
+          else G.police.addHeat(10, 'fired at a car');
+        } else {
+          e.hp -= spec.dmg;
+          G.addParticles(e.x, e.y, 8, '#ff5a5a');
+          if (e.hp <= 0) {
+            e.state = 'down'; e.downT = 3;
+            if (best.kind === 'ped') { G.police.addHeat(35, 'shot a pedestrian'); G.spawnPickup(e.x, e.y, 'cash', U.randi(15, 50)); }
+            if (best.kind === 'cop') G.police.addHeat(40, 'shot an officer');
+          } else {
+            e.state = 'flee'; e.fleeT = 3;
+            if (best.kind === 'cop') G.police.addHeat(15, 'fired at police');
+          }
+        }
+      } else if (pi === 0) {
+        G.police.addHeat(6, 'fired a gun');
+      }
     }
   }
 
@@ -181,11 +233,20 @@ function createPlayer(G) {
     p.punchCd = Math.max(0, p.punchCd - dt);
     p.shootCd = Math.max(0, p.shootCd - dt);
     p.hurtCd = Math.max(0, p.hurtCd - dt);
-    if (p.dead || G.state !== 'playing') return;
+    p.nitroT = Math.max(0, p.nitroT - dt);
+    p.nitroCd = Math.max(0, p.nitroCd - dt);
+    if (p.dead || G.state !== 'playing' || G.wheelOpen) return;
     if (p.inCar) return; // the car drives; the player rides along
     moveOnFoot(dt);
-    if (G.input.wasPressed('Space') || G.input.wasPressed('KeyJ')) punch();
-    if ((G.input.mouse.clicked || G.input.wasPressed('KeyF')) && p.hasPistol) shoot();
+    if (G.input.wasPressed('Space') || G.input.wasPressed('KeyJ')) {
+      if (p.weapon === 'fist') punch();
+    }
+    // Fire: click / F for single-shot weapons, hold for the SMG.
+    const spec = WEAPONS[p.weapon];
+    if (p.weapon !== 'fist') {
+      if (spec.auto) { if (G.input.mouse.down || G.input.down('KeyF')) shoot(); }
+      else if (G.input.mouse.clicked || G.input.wasPressed('KeyF')) shoot();
+    }
     if (G.input.wasPressed('KeyE')) tryEnterCar();
     // Passive regen, slow.
     if (p.hp < p.maxHp) p.hp = Math.min(p.maxHp, p.hp + 1.2 * dt);
@@ -200,5 +261,8 @@ function createPlayer(G) {
   p.tryEnterCar = tryEnterCar;
   p.exitCar = exitCar;
   p.damage = damage;
+  p.grantWeapon = grantWeapon;
+  p.selectWeapon = selectWeapon;
+  p.syncAmmo = syncAmmo;
   return p;
 }

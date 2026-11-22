@@ -1,13 +1,15 @@
-// SOLMAR HEAT — input.js
+// SOLMAR HEAT 3D — input.js
 // Keyboard + mouse state. Tracks held keys and edge-triggered presses
-// (cleared once per frame by the main loop). Prevents page scroll on game keys.
+// (cleared once per frame by the main loop). Prevents page scroll and
+// focus loss on game keys (WASD, arrows, Space, Tab for the weapon wheel).
 function createInput(canvas) {
   const keys = new Set();
-  const pressed = new Set();
+  const pressed = new Set(); // keys pressed since the last beginFrame
+  const framePressed = new Set(); // snapshot handed to this frame's handlers
   const mouse = { x: 0, y: 0, down: false, clicked: false };
   const GAME_KEYS = new Set([
     'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-    'KeyW', 'KeyA', 'KeyS', 'KeyD',
+    'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Tab',
   ]);
 
   function onKeyDown(e) {
@@ -40,7 +42,15 @@ function createInput(canvas) {
   return {
     keys, pressed, mouse,
     down(code) { return keys.has(code); },
-    wasPressed(code) { return pressed.has(code); },
+    wasPressed(code) { return framePressed.has(code); },
+    // Move accumulated presses into this frame's snapshot. Called once per
+    // frame, before input is handled — so a key tapped during a slow render
+    // is never lost (it waits for the next frame instead of being cleared).
+    beginFrame() {
+      framePressed.clear();
+      for (const k of pressed) framePressed.add(k);
+      pressed.clear();
+    },
     // Movement axes: -1..1.
     moveX() {
       let x = 0;
@@ -55,6 +65,6 @@ function createInput(canvas) {
       return y;
     },
     run() { return keys.has('ShiftLeft') || keys.has('ShiftRight'); },
-    endFrame() { pressed.clear(); mouse.clicked = false; },
+    endFrame() { mouse.clicked = false; },
   };
 }

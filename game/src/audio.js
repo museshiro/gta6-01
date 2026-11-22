@@ -1,11 +1,29 @@
-// SOLMAR HEAT — audio.js
+// SOLMAR HEAT 3D — audio.js
 // All sound is synthesized with WebAudio: no audio files, no network.
 // Engine hum, sirens, gunshots, impacts, pickups, jingles and a small
-// procedural music loop. Created on first user gesture; M toggles mute.
+// procedural radio: two stations (SOLMAR FM synthwave, VICE 98 latin)
+// plus OFF, switched with R. Created on first user gesture; M toggles mute.
 function createAudio() {
   let ctx = null, master = null, musicGain = null, engineNodes = null;
   let muted = false, musicOn = false, musicTimer = null;
   let sirenOsc = null, sirenGain = null, sirenPhase = 0, sirenT = 0;
+
+  // Radio stations: name, tempo (ms per 16th step), bass + lead patterns.
+  const STATIONS = [
+    {
+      name: 'SOLMAR FM', tag: 'synthwave 112',
+      tempo: 268, // ~112 bpm 16ths
+      bass: [55, 0, 55, 65.4, 55, 0, 49, 58.3, 55, 0, 55, 65.4, 82.4, 73.4, 65.4, 49],
+      lead: [220, 0, 261.6, 0, 329.6, 0, 261.6, 220, 196, 0, 220, 261.6, 293.7, 261.6, 220, 0],
+    },
+    {
+      name: 'VICE 98', tag: 'latin 96',
+      tempo: 312, // ~96 bpm 16ths
+      bass: [65.4, 0, 0, 65.4, 82.4, 0, 73.4, 0, 65.4, 0, 0, 65.4, 98, 82.4, 73.4, 65.4],
+      lead: [261.6, 329.6, 0, 392, 0, 329.6, 261.6, 0, 293.7, 329.6, 392, 0, 440, 392, 329.6, 0],
+    },
+  ];
+  let station = 0; // 0 = SOLMAR FM, 1 = VICE 98, -1 = OFF
 
   function ensure() {
     if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return true; }
@@ -99,14 +117,13 @@ function createAudio() {
     sirenGain.gain.value = U.clamp(0.09 * (1 - dist / 900), 0, 0.09);
   }
 
-  // Procedural music: a laid-back minor-key bassline with hats and a sparkle lead.
-  const BASS = [55, 0, 55, 65.4, 55, 0, 49, 58.3, 55, 0, 55, 65.4, 82.4, 73.4, 65.4, 49];
-  const LEAD = [220, 0, 261.6, 0, 329.6, 0, 261.6, 220, 196, 0, 220, 261.6, 293.7, 261.6, 220, 0];
+  // Procedural radio: the current station's bassline, hats and sparkle lead.
   let step = 0;
   function musicTick() {
-    if (!ctx || muted || !musicOn) return;
+    if (!ctx || muted || !musicOn || station < 0) return;
+    const st = STATIONS[station];
     const t = ctx.currentTime;
-    const b = BASS[step % BASS.length];
+    const b = st.bass[step % st.bass.length];
     if (b) {
       const o = ctx.createOscillator(), g = ctx.createGain();
       o.type = 'triangle'; o.frequency.value = b;
@@ -126,7 +143,7 @@ function createAudio() {
       src.connect(f); f.connect(g); g.connect(musicGain);
       src.start(t);
     }
-    const l = LEAD[step % LEAD.length];
+    const l = st.lead[step % st.lead.length];
     if (l && step % 16 >= 8) {
       const o = ctx.createOscillator(), g = ctx.createGain();
       o.type = 'sine'; o.frequency.value = l * 2;
@@ -137,6 +154,12 @@ function createAudio() {
     }
     step++;
   }
+  function restartMusicTimer() {
+    if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+    if (musicOn && station >= 0) {
+      musicTimer = setInterval(musicTick, STATIONS[station].tempo);
+    }
+  }
 
   return {
     ensure,
@@ -146,6 +169,15 @@ function createAudio() {
     },
     isMuted() { return muted; },
     engine, siren,
+    // Radio: R cycles SOLMAR FM -> VICE 98 -> OFF. Returns the new label.
+    cycleStation() {
+      station = station === 0 ? 1 : station === 1 ? -1 : 0;
+      restartMusicTimer();
+      return station < 0 ? 'Radio OFF' : STATIONS[station].name + ' — ' + STATIONS[station].tag;
+    },
+    stationName() {
+      return station < 0 ? 'OFF' : STATIONS[station].name;
+    },
     shot() { noiseHit(0.14, 0.5, 2600); blip(180, 0.08, 'square', 0.18, 60); },
     punch() { noiseHit(0.09, 0.35, 500); blip(120, 0.08, 'sine', 0.25, 50); },
     crash(v) { noiseHit(0.25, U.clamp(0.15 + v * 0.4, 0, 0.6), 900); blip(90, 0.2, 'sine', 0.3, 40); },
@@ -162,7 +194,7 @@ function createAudio() {
     startMusic() {
       if (!ensure() || musicOn) return;
       musicOn = true;
-      musicTimer = setInterval(musicTick, 300);
+      restartMusicTimer();
     },
     stopMusic() {
       musicOn = false;

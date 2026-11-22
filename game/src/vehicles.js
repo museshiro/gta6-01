@@ -1,7 +1,10 @@
-// SOLMAR HEAT — vehicles.js
+// SOLMAR HEAT 3D — vehicles.js
 // Cars: arcade driving physics, traffic that follows the road grid, parked
 // cars to steal, and police cruisers that chase. A car is a circle for
-// collision (radius ~26) with an angle, speed and a driver tag.
+// collision (radius ~26) with an angle, speed and a driver tag. Garage
+// upgrades (engine, armor, nitro) scale the player's car; SMPD units get
+// named roles — RAM cruisers ram, PIT cruisers cut across the player's
+// path, and the race rival steers toward waypoints.
 const CAR_TYPES = {
   sedan:   { name: 'Solmar Sedan',   max: 520, accel: 430, color: '#c94f4f' },
   sports:  { name: 'Vortex GT',     max: 730, accel: 560, color: '#f2b705' },
@@ -23,11 +26,14 @@ function createVehicles(G) {
       id: idc++, x, y, angle, speed: 0,
       type, name: t.name, max: t.max, accel: t.accel,
       color: t.color, // type color: the Vortex GT is always gold, so it reads as the hero car
-      driver: driver || null, // 'player' | 'traffic' | 'police' | 'parked' | ped object | null
+      driver: driver || null, // 'player' | 'traffic' | 'police' | 'parked' | 'rival' | ped object | null
       hp: 100, disabled: false, r: 26,
       // Traffic AI state.
       road: null, dir: 1, cruise: U.rand(170, 230), stuckT: 0,
       siren: 0, smokeT: 0, skid: 0,
+      unit: null, // SMPD callsign: 'RAM-1' | 'RAM-2' | 'PIT' | null
+      role: null, // police role: 'ram' | 'pit' | 'chase'
+      boost: false, // nitro active this frame (player car)
     };
     cars.push(car);
     return car;
@@ -56,10 +62,30 @@ function createVehicles(G) {
     }
   }
 
-  function spawnPoliceCar(x, y) {
+  function spawnPoliceCar(x, y, unit) {
     const car = makeCar(x, y, U.rand(0, U.TAU), 'police', 'police');
     car.cruise = 620;
+    if (unit) {
+      car.unit = unit;
+      car.role = unit === 'PIT' ? 'pit' : unit.indexOf('RAM') === 0 ? 'ram' : 'chase';
+    }
     return car;
+  }
+
+  // A named race rival for the Ember Grand Prix (mission 5): a sports car
+  // that steers toward the next checkpoint instead of following traffic.
+  function spawnRival(x, y) {
+    const car = makeCar(x, y, 0, 'sports', 'rival');
+    car.color = '#1d2733';
+    car.cruise = 560;
+    return car;
+  }
+  // Steer a car toward a point at full throttle (rival + PIT cut-offs).
+  function driveToward(car, tx, ty, dt) {
+    const want = Math.atan2(ty - car.y, tx - car.x);
+    const diff = U.angleDiff(car.angle, want);
+    const steer = U.clamp(diff * 1.6, -1, 1);
+    driveCar(car, dt, 1, steer);
   }
 
   function nearestCar(x, y, r) {
@@ -86,15 +112,27 @@ function createVehicles(G) {
     car.driver = null;
   }
 
+  // Garage upgrades for the player's car: engine raises top speed, armor
+  // soaks collision damage, nitro adds a short boost.
+  function playerMax(car) {
+    const up = G.player.upgrades;
+    return car.max * (1 + 0.12 * up.engine);
+  }
+  function armorFactor() {
+    return 1 - 0.2 * G.player.upgrades.armor;
+  }
+
   // Arcade car physics: accelerate, steer (less at high speed), drag, drift.
   function driveCar(car, dt, throttle, steer) {
     const t = CAR_TYPES[car.type];
+    const top = car.driver === 'player' ? playerMax(car) : t.max;
     if (throttle > 0) car.speed += t.accel * throttle * dt;
     else if (throttle < 0) {
       if (car.speed > 20) car.speed -= 900 * dt; // brake
       else car.speed -= 260 * dt; // reverse
     }
-    car.speed = U.clamp(car.speed, -220, t.max);
+    if (car.boost) car.speed += 520 * dt; // nitro
+    car.speed = U.clamp(car.speed, -220, top);
     // Drag.
     car.speed -= car.speed * 0.35 * dt;
     if (Math.abs(car.speed) < 4) car.speed = 0;
@@ -104,10 +142,10 @@ function createVehicles(G) {
     const ny = car.y + Math.sin(car.angle) * car.speed * dt;
     const px = { x: nx, y: car.y };
     const hitX = G.city.resolveCircle(px, car.r);
-    if (!hitX) car.x = nx; else { car.x = px.x; car.speed *= 0.55; car.hp -= 2; if (car.driver === 'player') G.audio.crash(0.3); }
+    if (!hitX) car.x = nx; else { car.x = px.x; car.speed *= 0.55; car.hp -= 2 * (car.driver === 'player' ? armorFactor() : 1); if (car.driver === 'player') G.audio.crash(0.3); }
     const py = { x: car.x, y: ny };
     const hitY = G.city.resolveCircle(py, car.r);
-    if (!hitY) car.y = ny; else { car.y = py.y; car.speed *= 0.55; car.hp -= 2; }
+    if (!hitY) car.y = ny; else { car.y = py.y; car.speed *= 0.55; car.hp -= 2 * (car.driver === 'player' ? armorFactor() : 1); }
     if ((hitX || hitY) && Math.abs(car.speed) > 200) {
       G.addParticles(car.x, car.y, 6, '#ffb347');
       G.cam.shake = Math.min(G.cam.shake + 0.25, 1);
@@ -168,19 +206,27 @@ function createVehicles(G) {
 
   function policeCarUpdate(car, dt) {
     const pl = G.player;
-    const tx = pl.inCar ? pl.inCar.x : pl.x;
-    const ty = pl.inCar ? pl.inCar.y : pl.y;
-    const want = Math.atan2(ty - car.y, tx - car.x);
+    const pc = pl.inCar;
+    const tx = pc ? pc.x : pl.x;
+    const ty = pc ? pc.y : pl.y;
+    let gx = tx, gy = ty;
+    if (car.role === 'pit' && pc) {
+      // PIT: aim at the point ahead of the player to cut across their path.
+      const lead = 1.1;
+      gx = pc.x + Math.cos(pc.angle) * Math.abs(pc.speed) * lead * 0.35;
+      gy = pc.y + Math.sin(pc.angle) * Math.abs(pc.speed) * lead * 0.35;
+    }
+    const want = Math.atan2(gy - car.y, gx - car.x);
     const diff = U.angleDiff(car.angle, want);
     const steer = U.clamp(diff * 1.6, -1, 1);
     const d = U.dist(car.x, car.y, tx, ty);
     const throttle = d > 60 ? 1 : 0.2;
     driveCar(car, dt, throttle, steer);
     car.siren = (car.siren + dt) % 0.8;
-    // Ram the player's car.
-    const pc = pl.inCar;
+    // Ram the player's car (RAM units hit harder).
     if (pc && U.dist(car.x, car.y, pc.x, pc.y) < 52) {
-      pc.hp -= 14 * dt;
+      const ram = car.role === 'ram' ? 20 : 14;
+      pc.hp -= ram * armorFactor() * dt;
       pc.speed *= 0.985;
       if (U.chance(dt * 8)) G.addParticles(car.x, car.y, 4, '#ffb347');
       if (pc.hp <= 0) disableCar(pc);
@@ -206,7 +252,8 @@ function createVehicles(G) {
           b.x += nx * push; b.y += ny * push;
           const rel = Math.abs(a.speed - b.speed);
           if (rel > 120) {
-            a.hp -= 4; b.hp -= 4;
+            a.hp -= 4 * (a.driver === 'player' ? armorFactor() : 1);
+            b.hp -= 4 * (b.driver === 'player' ? armorFactor() : 1);
             G.addParticles((a.x + b.x) / 2, (a.y + b.y) / 2, 5, '#ffb347');
             if (a.driver === 'player' || b.driver === 'player') G.audio.crash(0.4);
           }
@@ -225,11 +272,20 @@ function createVehicles(G) {
       const input = G.input;
       const throttle = (input.down('KeyW') || input.down('ArrowUp') ? 1 : 0) + (input.down('KeyS') || input.down('ArrowDown') ? -1 : 0);
       const steer = (input.down('KeyA') || input.down('ArrowLeft') ? -1 : 0) + (input.down('KeyD') || input.down('ArrowRight') ? 1 : 0);
-      driveCar(pl.inCar, dt, throttle, steer);
-      pl.x = pl.inCar.x; pl.y = pl.inCar.y; pl.angle = pl.inCar.angle;
+      // Nitro: Shift while driving, if bought at the garage.
+      const car = pl.inCar;
+      if (pl.upgrades.nitro && input.run() && pl.nitroCd <= 0 && pl.nitroT <= 0 && Math.abs(car.speed) > 60) {
+        pl.nitroT = 1.2; pl.nitroCd = 5;
+        G.audio.engine(1, true);
+        G.hud.toast('NITRO!');
+      }
+      car.boost = pl.nitroT > 0;
+      driveCar(car, dt, throttle, steer);
+      car.boost = false;
+      pl.x = car.x; pl.y = car.y; pl.angle = car.angle;
       if (input.wasPressed('KeyE')) pl.exitCar();
       // Engine + speed audio.
-      G.audio.engine(Math.abs(pl.inCar.speed) / pl.inCar.max, true);
+      G.audio.engine(Math.abs(car.speed) / playerMax(car), true);
     } else {
       G.audio.engine(0, false);
     }
@@ -238,6 +294,10 @@ function createVehicles(G) {
       if (car.driver === 'player') continue;
       if (car.driver === 'police') policeCarUpdate(car, dt);
       else if (car.driver === 'traffic') trafficUpdate(car, dt);
+      else if (car.driver === 'rival' && G.missions.rivalTarget) {
+        driveToward(car, G.missions.rivalTarget.x, G.missions.rivalTarget.y, dt);
+        car.siren = (car.siren + dt) % 0.8;
+      }
       // Parked cars and driverless cars sit still.
       car.smokeT -= dt;
       if (car.hp < 45 && car.smokeT <= 0) {
@@ -290,7 +350,7 @@ function createVehicles(G) {
   }
 
   return {
-    cars, makeCar, spawnParked, spawnTraffic, spawnPoliceCar,
-    nearestCar, disableCar, update,
+    cars, makeCar, spawnParked, spawnTraffic, spawnPoliceCar, spawnRival,
+    driveToward, nearestCar, disableCar, update, playerMax,
   };
 }

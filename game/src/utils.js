@@ -1,5 +1,7 @@
-// SOLMAR HEAT — utils.js
-// Small math and random helpers shared by every system. No dependencies.
+// SOLMAR HEAT 3D — utils.js
+// Small math, random and formatting helpers shared by every system.
+// No dependencies. Deterministic helpers (mulberry32) keep the city
+// layout identical on every load; the rest is plain arcade math.
 const U = {
   TAU: Math.PI * 2,
   clamp(v, a, b) { return v < a ? a : v > b ? b : v; },
@@ -57,4 +59,23 @@ const U = {
   },
   // Nice number formatting for the HUD.
   money(n) { return '$' + Math.floor(n).toLocaleString('en-US'); },
+  // Game-clock formatting: minutes since midnight -> "14:05".
+  clock(mins) {
+    const m = Math.floor(mins) % 1440;
+    const h = Math.floor(m / 60), mm = m % 60;
+    return String(h).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  },
+  // Hex color string -> [r, g, b] floats 0..1, for the WebGL renderer.
+  hexRgb(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  },
+  // Shade a hex color by a 0..1 factor (lighting on 3D faces).
+  shade(hex, f) {
+    const c = U.hexRgb(hex);
+    const r = Math.round(U.clamp(c[0] * f, 0, 1) * 255);
+    const g = Math.round(U.clamp(c[1] * f, 0, 1) * 255);
+    const b = Math.round(U.clamp(c[2] * f, 0, 1) * 255);
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  },
 };

@@ -1,7 +1,9 @@
-// SOLMAR HEAT — pedestrians.js
+// SOLMAR HEAT 3D — pedestrians.js
 // The people of Solmar: they stroll the sidewalks, cross streets, chat,
 // panic and flee from gunfire and speeding cars, and get back up after
-// being knocked down. A few are mission characters (guards, couriers).
+// being knocked down. A few are mission characters (guards, couriers,
+// and the tail target of mission 7, who strolls a slow loop and must
+// never be spooked).
 const PED_COLORS = ['#e07b39', '#3f7dbe', '#8e44ad', '#4fae8a', '#c94f4f', '#d8c8a0', '#5a7d5a', '#b85c8a'];
 
 function createPeds(G) {
@@ -17,7 +19,7 @@ function createPeds(G) {
       state: o.state || 'walk', // walk | idle | flee | down | guard
       hp: o.hp || 40,
       color: o.color || U.pick(PED_COLORS),
-      mission: o.mission || null, // 'courier' | 'guard' | null
+      mission: o.mission || null, // 'courier' | 'guard' | 'tail' | null
       fleeT: 0, downT: 0, idleT: U.rand(0, 4),
       target: null, // walk target for guards
       punchCd: 0,
@@ -47,7 +49,7 @@ function createPeds(G) {
 
   function scare(x, y, radius) {
     for (const p of list) {
-      if (p.state === 'down' || p.mission === 'guard') continue;
+      if (p.state === 'down' || p.mission === 'guard' || p.mission === 'tail') continue;
       if (U.dist(x, y, p.x, p.y) < radius) {
         p.state = 'flee'; p.fleeT = U.rand(2, 4);
       }
@@ -95,6 +97,21 @@ function createPeds(G) {
             G.audio.punch();
           }
         }
+        continue;
+      }
+      if (p.mission === 'tail') {
+        // The tail target: a slow, calm stroll along the sidewalk loop.
+        // He never runs — getting too close is what gives the player away.
+        const sp = 55;
+        const nx = p.x + Math.cos(p.angle) * sp * dt;
+        const ny = p.y + Math.sin(p.angle) * sp * dt;
+        const px = { x: nx, y: p.y };
+        const hitX = G.city.resolveCircle(px, 12);
+        if (!hitX) p.x = nx; else p.x = px.x;
+        const py = { x: p.x, y: ny };
+        const hitY = G.city.resolveCircle(py, 12);
+        if (!hitY) p.y = ny; else p.y = py.y;
+        if (hitX || hitY || U.chance(dt * 0.08)) p.angle = U.rand(0, U.TAU);
         continue;
       }
       // Normal stroll: walk, pause, pick a new direction.

@@ -1,8 +1,10 @@
-// SOLMAR HEAT — city.js
-// Generates the city of Solmar: a sun-soaked coastal grid city with avenues,
-// streets, blocks of buildings, parks, a beach and the sea. Deterministic
-// (seeded), so every load builds the same city. Also answers collision and
-// placement queries for the rest of the game.
+// SOLMAR HEAT 3D — city.js
+// Generates ISLA SOLMAR, a volcanic island city: a sun-soaked coastal
+// grid with avenues, streets, blocks of buildings, parks, a beach and
+// the sea to the east, Mount Ember (a smoking volcano) in the north-west
+// and the Ember Lighthouse at the southern tip of the beach. Deterministic
+// (seeded), so every load builds the same island. Also answers collision,
+// placement and district queries for the rest of the game.
 function createCity() {
   const W = 3200, H = 2400;
   const ROAD_W = 96;
@@ -11,6 +13,21 @@ function createCity() {
   // Avenue (vertical) and street (horizontal) center lines.
   const roadsV = [220, 620, 1020, 1420, 1820, 2220, 2620];
   const roadsH = [220, 620, 1020, 1420, 1820, 2180];
+
+  // Named districts, resolved from a world position (HUD + minimap + standing).
+  const DISTRICTS = [
+    { name: 'Ember Hills', x0: 0, y0: 0, x1: 1000, y1: 800 },
+    { name: 'The Docks', x0: 2000, y0: 0, x1: 2920, y1: 800 },
+    { name: 'Downtown', x0: 1000, y0: 0, x1: 2000, y1: 1200 },
+    { name: 'Palm Court', x0: 2000, y0: 1200, x1: 2920, y1: 2400 },
+    { name: 'Solmar Beach', x0: 2920, y0: 0, x1: 3200, y1: 2400 },
+  ];
+  function districtAt(x, y) {
+    for (const d of DISTRICTS) {
+      if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d.name;
+    }
+    return 'Downtown';
+  }
 
   const buildings = [];
   const parks = [];
@@ -53,7 +70,7 @@ function createCity() {
             x: bx, y: by, w: bw, h: bh,
             color: buildingColor(),
             roof: rng() < 0.5 ? '#5a5148' : '#6e6258',
-            h: U.randi(6, 26), // fake height for the shadow offset
+            h: U.randi(6, 26), // fake height for the shadow offset / 3D extrusion
             seed: rng(),
           });
         }
@@ -64,6 +81,12 @@ function createCity() {
   // Beach + sea along the east edge.
   const beach = { x: 2920, y: 0, w: 130, h: H };
   const water = { x: 3050, y: 0, w: 150, h: H };
+
+  // Mount Ember: the smoking volcano in the north-west corner, outside the
+  // road grid. The observatory road-end sits at its foot.
+  const volcano = { x: 150, y: 130, r: 210, peak: 260 };
+  // Ember Lighthouse: striped tower at the southern tip of the beach.
+  const lighthouse = { x: 2985, y: 2260, r: 26, h: 150 };
 
   // Landmarks: named buildings the story and missions use.
   function landmarkAt(bx, by, name, tint) {
@@ -87,6 +110,10 @@ function createCity() {
   landmarks.respray = landmarkAt(1020, 1820, 'Turbo Respray', '#d98aa5');
   // A parking garage for mission 4 (the package).
   landmarks.parking = landmarkAt(2220, 1420, 'Harbor Parking', '#6e6258');
+  // Ember Jewels, the glass-fronted jeweller in Downtown (mission 8).
+  landmarks.jewels = landmarkAt(1420, 1020, 'Ember Jewels', '#e8d5a0');
+  // The observatory at the foot of Mount Ember (mission 9 finale).
+  landmarks.observatory = landmarkAt(220, 220, 'Ember Observatory', '#b8c4d4');
 
   function isRoad(x, y) {
     if (x < 0 || y < 0 || x > W || y > H) return false;
@@ -106,11 +133,19 @@ function createCity() {
     }
     return null;
   }
-  // Push a circle (player, car, ped) out of buildings and water. Returns true on hit.
+  // Push a circle (player, car, ped) out of buildings, the volcano and water.
   function resolveCircle(p, r) {
     let hit = false;
     for (const b of buildings) {
       if (U.circleRectResolve(p, r, b)) hit = true;
+    }
+    // Mount Ember is solid rock: keep everyone off the cone.
+    const dv = U.dist(p.x, p.y, volcano.x, volcano.y);
+    if (dv < volcano.r * 0.55 + r) {
+      const a = Math.atan2(p.y - volcano.y, p.x - volcano.x);
+      p.x = volcano.x + Math.cos(a) * (volcano.r * 0.55 + r);
+      p.y = volcano.y + Math.sin(a) * (volcano.r * 0.55 + r);
+      hit = true;
     }
     // Water blocks movement (except the beach edge).
     if (p.x + r > water.x) { p.x = water.x - r; hit = true; }
@@ -146,6 +181,7 @@ function createCity() {
 
   return {
     W, H, ROAD_W, roadsV, roadsH, buildings, parks, beach, water, landmarks,
+    volcano, lighthouse, districts: DISTRICTS, districtAt,
     isRoad, isWater, isBeach, buildingAt, resolveCircle,
     roadPoint, sidewalkPoint, pointNear, buildingCenter,
   };

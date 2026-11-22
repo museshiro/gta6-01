@@ -1,9 +1,12 @@
-// SOLMAR HEAT — render.js
-// Draws the whole world on one canvas: ground, sea and beach, roads with
-// lane markings, blocks, buildings with sun shadows and rooftops, parks and
-// trees, cars, pedestrians, the player, particles and skid marks, then a
-// warm sun-soaked light overlay. Camera follows the player with a smooth
-// lerp, zooming out at speed, plus trauma-based screen shake.
+// SOLMAR HEAT 3D — render.js
+// The 2D canvas renderer: the fallback when WebGL is unavailable, and the
+// reference look of the game. Draws the whole world top-down: ground, sea
+// and beach, roads with lane markings, blocks, buildings with sun shadows
+// and rooftops, Mount Ember and the Ember Lighthouse, parks and trees,
+// cars, pedestrians, the player, the CONDOR-1 helicopter, particles and
+// skid marks, then a day/night light overlay driven by the game clock.
+// Camera follows the player with a smooth lerp, zooming out at speed,
+// plus trauma-based screen shake.
 function createRenderer(G) {
   const ctx = G.ctx;
 
@@ -31,6 +34,40 @@ function createRenderer(G) {
       ctx.fillRect(p.x, p.y, p.w, p.h);
       ctx.fillStyle = '#8fbf72';
       ctx.fillRect(p.x + 10, p.y + 10, p.w - 20, p.h - 20);
+    }
+    // Mount Ember: the volcano cone in the north-west, with a smoking crater.
+    const v = G.city.volcano;
+    if (v.x + v.r > x0 && v.x - v.r < x1 && v.y + v.r > y0 && v.y - v.r < y1) {
+      ctx.fillStyle = '#5a3a28';
+      ctx.beginPath(); ctx.arc(v.x, v.y, v.r, 0, U.TAU); ctx.fill();
+      ctx.fillStyle = '#7a4a30';
+      ctx.beginPath(); ctx.arc(v.x, v.y, v.r * 0.72, 0, U.TAU); ctx.fill();
+      ctx.fillStyle = '#2b1a12';
+      ctx.beginPath(); ctx.arc(v.x, v.y, v.r * 0.3, 0, U.TAU); ctx.fill();
+      // Smoke puffs drifting off the crater.
+      ctx.fillStyle = 'rgba(154,154,154,0.55)';
+      for (let i = 0; i < 3; i++) {
+        const sy = v.y - 30 - ((G.time * 26 + i * 55) % 110);
+        ctx.beginPath(); ctx.arc(v.x + Math.sin(G.time * 0.5 + i * 2) * 24, sy, 14 + i * 6, 0, U.TAU); ctx.fill();
+      }
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('▲ MOUNT EMBER', v.x, v.y + v.r + 18);
+    }
+    // Ember Lighthouse at the southern tip of the beach.
+    const lh = G.city.lighthouse;
+    if (lh.x > x0 - 60 && lh.x < x1 + 60 && lh.y > y0 - 60 && lh.y < y1 + 60) {
+      ctx.fillStyle = '#f2f2f2';
+      ctx.beginPath(); ctx.arc(lh.x, lh.y, lh.r, 0, U.TAU); ctx.fill();
+      ctx.fillStyle = '#c94f4f';
+      ctx.beginPath(); ctx.arc(lh.x, lh.y, lh.r * 0.55, 0, U.TAU); ctx.fill();
+      ctx.fillStyle = '#ffd34d';
+      ctx.beginPath(); ctx.arc(lh.x, lh.y, 6, 0, U.TAU); ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('EMBER LIGHTHOUSE', lh.x - 30, lh.y + 44);
     }
   }
 
@@ -227,6 +264,17 @@ function createRenderer(G) {
       ctx.fillStyle = on ? '#2e7bff' : '#ff2e2e';
       ctx.beginPath(); ctx.arc(6, 0, 5, 0, U.TAU); ctx.fill();
     }
+    // SMPD callsign above named units.
+    if (car.unit) {
+      ctx.rotate(-car.angle);
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      const w = ctx.measureText(car.unit).width + 10;
+      ctx.fillRect(-w / 2, -30, w, 14);
+      ctx.fillStyle = '#ffd34d';
+      ctx.fillText(car.unit, 0, -19);
+    }
     ctx.restore();
   }
 
@@ -268,6 +316,12 @@ function createRenderer(G) {
       ctx.textAlign = 'center';
       ctx.fillText('◆', 0, -14);
     }
+    if (p.mission === 'tail') {
+      ctx.fillStyle = '#ffd34d';
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('?', 0, -14);
+    }
     ctx.restore();
   }
 
@@ -296,8 +350,8 @@ function createRenderer(G) {
     ctx.beginPath(); ctx.arc(Math.cos(pl.angle) * 5, Math.sin(pl.angle) * 5 - 1, 5.5, 0, U.TAU); ctx.fill();
     ctx.fillStyle = '#2b2b2b';
     ctx.beginPath(); ctx.arc(Math.cos(pl.angle) * 5, Math.sin(pl.angle) * 5 - 3, 5, Math.PI, 0); ctx.fill();
-    // Pistol in hand.
-    if (pl.hasPistol) {
+    // Gun in hand.
+    if (pl.weapon !== 'fist') {
       ctx.strokeStyle = '#1a1a1a';
       ctx.lineWidth = 3;
       ctx.beginPath();
@@ -311,6 +365,35 @@ function createRenderer(G) {
       ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(0, 0, 15, 0, U.TAU); ctx.stroke();
     }
+    ctx.restore();
+  }
+
+  function drawHeli() {
+    const heli = G.police.heli;
+    if (!heli || !heli.active) return;
+    // Searchlight pool on the ground.
+    ctx.fillStyle = 'rgba(255,224,138,0.18)';
+    ctx.beginPath(); ctx.arc(heli.x, heli.y, heli.searchR, 0, U.TAU); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,224,138,0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(heli.x, heli.y, heli.searchR, 0, U.TAU); ctx.stroke();
+    // Body + tail + spinning rotor.
+    ctx.save();
+    ctx.translate(heli.x, heli.y);
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath(); ctx.ellipse(4, 6, 26, 14, 0, 0, U.TAU); ctx.fill();
+    ctx.rotate(heli.angle);
+    ctx.fillStyle = '#2f4d7d';
+    ctx.beginPath(); ctx.roundRect(-22, -11, 44, 22, 8); ctx.fill();
+    ctx.fillRect(-46, -4, 26, 8);
+    ctx.fillStyle = '#ffd34d';
+    ctx.font = 'bold 9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('CONDOR-1', 0, 3);
+    ctx.rotate(heli.rotor - heli.angle);
+    ctx.strokeStyle = '#1a1a1a';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(-34, 0); ctx.lineTo(34, 0); ctx.stroke();
     ctx.restore();
   }
 
@@ -333,7 +416,8 @@ function createRenderer(G) {
   }
 
   function drawLight(cam) {
-    // Warm sun wash + vignette for the sun-soaked look.
+    // Warm sun wash + vignette for the sun-soaked look, plus a day/night
+    // tint from the game clock (golden hour, then a blue night).
     const { x0, y0, x1, y1 } = cam.view;
     const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
     const r = Math.max(x1 - x0, y1 - y0) * 0.75;
@@ -342,6 +426,17 @@ function createRenderer(G) {
     g.addColorStop(1, 'rgba(20,10,40,0.20)');
     ctx.fillStyle = g;
     ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    const mins = G.clockMin || 600;
+    const dayF = U.clamp(Math.sin(Math.PI * (mins - 360) / 720), 0, 1);
+    if (dayF < 1) {
+      const night = (1 - dayF) * 0.42;
+      ctx.fillStyle = 'rgba(10,16,48,' + night.toFixed(3) + ')';
+      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    }
+    if ((mins > 960 && mins < 1140) || (mins > 300 && mins < 420)) {
+      ctx.fillStyle = 'rgba(255,140,60,0.10)';
+      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    }
   }
 
   function draw(cam) {
@@ -371,6 +466,7 @@ function createRenderer(G) {
     for (const p of G.peds.list) drawPed(p);
     for (const c of G.police.cops) drawPed(c);
     drawPlayer();
+    drawHeli();
     drawLight(cam);
     ctx.restore();
     // Reset transform for HUD (drawn in screen space).
