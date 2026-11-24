@@ -1,72 +1,106 @@
-// pedestrians.js — the people of Puerto Brasa: strollers, vendors, guards.
-// They walk the sidewalks, scatter when shots ring out, and some of them
-// fight back when a mission turns a street into a battlefield.
+// pedestrians.js — the people of Isla Caldera: sidewalk walkers who stroll,
+// scatter when gunfire starts, and can be knocked down. They give the city life
+// and the combat its consequences (every knock-down raises the heat).
 
-import { mulberry32, range, pick, clamp, dist, angleDiff } from './utils.js';
-import { collideCircle } from './city.js';
+import { dist2 } from './utils.js';
+import { collideWorld, nearestRoadPoint } from './city.js';
 
-const SHIRTS = [[0.95, 0.6, 0.4], [0.4, 0.7, 0.95], [0.95, 0.9, 0.5], [0.6, 0.9, 0.5], [0.9, 0.5, 0.7], [0.85, 0.85, 0.85], [0.5, 0.4, 0.8]];
-const SKINS = [[0.9, 0.7, 0.55], [0.75, 0.55, 0.4], [0.6, 0.42, 0.3], [0.95, 0.8, 0.65]];
+const SHIRTS = [
+  [0.85, 0.85, 0.8], [0.9, 0.5, 0.3], [0.3, 0.55, 0.85], [0.9, 0.75, 0.35],
+  [0.45, 0.75, 0.45], [0.75, 0.35, 0.55], [0.6, 0.6, 0.65], [0.95, 0.6, 0.6],
+];
 
-export function makePed(x, z, hostile) {
-  const rng = mulberry32((x * 131 + z * 17 + 7) >>> 0);
+export function makePed(x, z, rng) {
   return {
-    x, z, angle: range(rng, 0, Math.PI * 2), phase: range(rng, 0, 6),
-    shirt: pick(rng, SHIRTS).slice(), skin: pick(rng, SKINS).slice(),
-    speed: range(rng, 1.2, 2.2), hp: hostile ? 60 : 30, hostile: !!hostile,
-    fleeing: false, moving: true, tx: x, tz: z, shootCd: 0, dead: false,
+    x, z,
+    heading: rng() * Math.PI * 2,
+    speed: 1.2 + rng() * 1.2,
+    state: 'walk', // walk | flee | down
+    color: SHIRTS[Math.floor(rng() * SHIRTS.length)],
+    health: 100,
+    axis: rng() < 0.5 ? 'x' : 'z',
+    dir: rng() < 0.5 ? 1 : -1,
+    fleeT: 0,
   };
 }
 
-export function createCrowd(city, count) {
-  const rng = mulberry32(4242);
-  const peds = [];
-  for (let i = 0; i < count; i++) {
-    const road = pick(rng, city.roadsX);
-    const t = range(rng, -190, 170);
-    peds.push(makePed(road + (rng() < 0.5 ? 8 : -8), t, false));
-  }
-  return peds;
+/** Keep ~22 pedestrians on the sidewalks around the player. */
+export function spawnPeds(state, dt) {
+  const p = state.player;
+  const px = p.onFoot ? p.x : p.car.x;
+  const pz = p.onFoot ? p.z : p.car.z;
+  const alive = state.peds.filter((q) => q.state !== 'down');
+  if (alive.length >= 22) return;
+  if (state._pedTimer === undefined) state._pedTimer = 0;
+  state._pedTimer -= dt;
+  if (state._pedTimer > 0) return;
+  state._pedTimer = 0.5;
+  const rng = state.rng;
+  const rp = nearestRoadPoint(px + (rng() - 0.5) * 160, pz + (rng() - 0.5) * 160);
+  const d = dist2(rp.x, rp.z, px, pz);
+  if (d < 25 || d > 140) return;
+  const ped = makePed(rp.x + (rp.axis === 'x' ? 0 : 7), rp.z + (rp.axis === 'x' ? 7 : 0), rng);
+  ped.axis = rp.axis;
+  state.peds.push(ped);
 }
 
-export function updatePeds(city, peds, player, dt, panicAt) {
-  const rng = Math.random;
-  for (const p of peds) {
-    if (p.dead) continue;
-    p.shootCd -= dt;
-    const dPlayer = dist(p.x, p.z, player.x, player.z);
-    if (panicAt && dist(p.x, p.z, panicAt.x, panicAt.z) < 30) p.fleeing = true;
-    if (p.hostile) {
-      // Hostile guards close in and shoot when the player is near.
-      if (dPlayer < 26) {
-        const want = Math.atan2(player.x - p.x, player.z - p.z);
-        p.angle += angleDiff(p.angle, want) * Math.min(1, dt * 4);
-        if (dPlayer > 8) {
-          p.x += Math.sin(p.angle) * 3.2 * dt; p.z += Math.cos(p.angle) * 3.2 * dt;
-          p.moving = true;
-        } else p.moving = false;
-        if (p.shootCd <= 0 && dPlayer < 22) { p.shootCd = 1.1; p.firing = true; } else p.firing = false;
-      } else {
-        p.moving = false; p.firing = false;
-      }
-    } else if (p.fleeing) {
-      const away = Math.atan2(p.x - player.x, p.z - player.z);
-      p.angle = away;
-      p.x += Math.sin(away) * 5 * dt; p.z += Math.cos(away) * 5 * dt;
-      p.moving = true;
-      if (dPlayer > 45) p.fleeing = false;
-    } else {
-      if (dist(p.x, p.z, p.tx, p.tz) < 2 || rng() < dt * 0.02) {
-        p.tx = clamp(p.x + range(rng, -40, 40), -205, 205);
-        p.tz = clamp(p.z + range(rng, -40, 40), -205, 170);
-      }
-      const want = Math.atan2(p.tx - p.x, p.tz - p.z);
-      p.angle += angleDiff(p.angle, want) * Math.min(1, dt * 3);
-      p.x += Math.sin(p.angle) * p.speed * dt;
-      p.z += Math.cos(p.angle) * p.speed * dt;
-      p.moving = true;
+export function updatePeds(state, dt) {
+  const shot = state.lastShotPos;
+  const p = state.player;
+  const px = p.onFoot ? p.x : p.car.x;
+  const pz = p.onFoot ? p.z : p.car.z;
+  for (const ped of state.peds) {
+    if (ped.state === 'down') continue;
+    // Flee from the last gunshot.
+    if (shot && dist2(ped.x, ped.z, shot.x, shot.z) < 32) {
+      ped.state = 'flee';
+      ped.fleeT = 3;
     }
-    collideCircle(city, p, 0.6);
+    if (ped.state === 'flee') {
+      ped.fleeT -= dt;
+      const dx = ped.x - shot.x;
+      const dz = ped.z - shot.z;
+      const d = Math.hypot(dx, dz) || 1;
+      ped.heading = Math.atan2(dx / d, -dz / d);
+      const nx = ped.x + Math.sin(ped.heading) * 7 * dt;
+      const nz = ped.z - Math.cos(ped.heading) * 7 * dt;
+      const hit = collideWorld(state.city, nx, nz, 0.5);
+      ped.x = hit.x;
+      ped.z = hit.z;
+      if (ped.fleeT <= 0) ped.state = 'walk';
+      continue;
+    }
+    // Stroll along the sidewalk.
+    const step = ped.speed * dt;
+    if (ped.axis === 'x') ped.x += ped.dir * step;
+    else ped.z += ped.dir * step;
+    ped.heading = ped.axis === 'x'
+      ? (ped.dir > 0 ? Math.PI / 2 : -Math.PI / 2)
+      : (ped.dir > 0 ? Math.PI : 0);
+    if (Math.abs(ped.x) > 255 || Math.abs(ped.z) > 255 || state.rng() < dt * 0.02) {
+      ped.dir *= -1;
+    }
+    if (dist2(ped.x, ped.z, px, pz) > 180) {
+      // Recycle far-away walkers back near the player.
+      const rp = nearestRoadPoint(px + (state.rng() - 0.5) * 120, pz + (state.rng() - 0.5) * 120);
+      ped.x = rp.x;
+      ped.z = rp.z;
+      ped.axis = rp.axis;
+    }
   }
-  return peds.filter((p) => !p.dead);
+  // Drop the long-dead from the list, keep the count sane.
+  if (state.peds.length > 40) {
+    state.peds = state.peds.filter((q) => q.state !== 'down').slice(0, 30);
+  }
+}
+
+export function nearestPed(state, x, z, maxDist, aliveOnly = true) {
+  let best = null;
+  let bd = maxDist;
+  for (const ped of state.peds) {
+    if (aliveOnly && ped.state === 'down') continue;
+    const d = dist2(ped.x, ped.z, x, z);
+    if (d < bd) { bd = d; best = ped; }
+  }
+  return best;
 }

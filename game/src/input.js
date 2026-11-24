@@ -1,37 +1,65 @@
 // input.js — keyboard + mouse state for CALDERA VIVA.
+// Keys are tracked by `code`; `wasPressed` is an edge that main.js clears each frame.
 
-export function createInput(canvas) {
-  const keys = {};
-  const pressed = {}; // edge-triggered: true only on the frame the key went down
-  const mouse = { x: 0, y: 0, down: false, clicked: false, dragDX: 0, dragDY: 0, wheel: 0 };
-  let dragging = false, lastX = 0, lastY = 0;
+export const keys = {};
+export const edge = {};
+export const mouse = { x: 0, y: 0, down: false, clicked: false, worldX: 0, worldZ: 0 };
 
-  const norm = (e) => e.key.length === 1 ? e.key.toLowerCase() : e.key;
+let attached = false;
+
+export function initInput(canvas) {
+  if (attached) return;
+  attached = true;
   window.addEventListener('keydown', (e) => {
-    const k = norm(e);
-    if (!keys[k]) pressed[k] = true;
-    keys[k] = true;
-    if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'tab'].includes(k)) e.preventDefault();
+    if (!keys[e.code]) edge[e.code] = true;
+    keys[e.code] = true;
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
   });
-  window.addEventListener('keyup', (e) => { keys[norm(e)] = false; });
-  window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
-
-  canvas.addEventListener('mousedown', (e) => { mouse.down = true; mouse.clicked = true; dragging = true; lastX = e.clientX; lastY = e.clientY; });
-  window.addEventListener('mouseup', () => { mouse.down = false; dragging = false; });
-  window.addEventListener('mousemove', (e) => {
-    mouse.x = e.clientX; mouse.y = e.clientY;
-    if (dragging) { mouse.dragDX += e.clientX - lastX; mouse.dragDY += e.clientY - lastY; lastX = e.clientX; lastY = e.clientY; }
+  window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+  window.addEventListener('blur', () => {
+    for (const k of Object.keys(keys)) keys[k] = false;
   });
-  canvas.addEventListener('wheel', (e) => { mouse.wheel += e.deltaY; e.preventDefault(); }, { passive: false });
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('mousemove', (e) => {
+    const r = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - r.left;
+    mouse.y = e.clientY - r.top;
+  });
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 0) { mouse.down = true; mouse.clicked = true; }
+  });
+  window.addEventListener('mouseup', () => { mouse.down = false; });
+}
 
-  return {
-    keys, pressed, mouse,
-    down(...ks) { return ks.some((k) => keys[k]); },
-    hit(...ks) { return ks.some((k) => pressed[k]); },
-    endFrame() {
-      for (const k in pressed) pressed[k] = false;
-      mouse.clicked = false; mouse.dragDX = 0; mouse.dragDY = 0; mouse.wheel = 0;
-    },
-  };
+export function isDown(code) {
+  return !!keys[code];
+}
+
+export function wasPressed(code) {
+  return !!edge[code];
+}
+
+/** Clear all edge flags at the end of a frame. */
+export function endFrame() {
+  for (const k of Object.keys(edge)) edge[k] = false;
+  mouse.clicked = false;
+}
+
+/** Driving axes: -1..1 throttle (W/S, Up/Down) and steering (A/D, Left/Right). */
+export function driveAxis() {
+  const throttle = (isDown('KeyW') || isDown('ArrowUp') ? 1 : 0) - (isDown('KeyS') || isDown('ArrowDown') ? 1 : 0);
+  const steer = (isDown('KeyA') || isDown('ArrowLeft') ? 1 : 0) - (isDown('KeyD') || isDown('ArrowRight') ? 1 : 0);
+  return { throttle, steer };
+}
+
+/** On-foot axes from WASD/arrows, relative to the camera heading. */
+export function walkAxis() {
+  const f = (isDown('KeyW') || isDown('ArrowUp') ? 1 : 0) - (isDown('KeyS') || isDown('ArrowDown') ? 1 : 0);
+  const s = (isDown('KeyD') || isDown('ArrowRight') ? 1 : 0) - (isDown('KeyA') || isDown('ArrowLeft') ? 1 : 0);
+  return { f, s };
+}
+
+/** Test hook: pretend a key is held or released. */
+export function simulateKey(code, down) {
+  if (down && !keys[code]) edge[code] = true;
+  keys[code] = down;
 }

@@ -1,152 +1,257 @@
-// player.js — the protagonist of CALDERA VIVA: on foot, behind the wheel,
-// and down the barrel of the weapon wheel. One object, three modes.
+// player.js — the protagonist of CALDERA VIVA: on-foot movement and combat,
+// stealing and driving cars, the weapon wheel, the garage and the crew call.
+// Mara Vela drives the getaway car; Tito Branco runs the garage.
 
-import { clamp, dist, angleDiff } from './utils.js';
-import { collideCircle } from './city.js';
-import { driveCar, nearestCar } from './vehicles.js';
+import { clamp, dist2, angleWrap } from './utils.js';
+import { collideWorld } from './city.js';
+import { nearestCar } from './vehicles.js';
+import { nearestPed } from './pedestrians.js';
 
-export const WEAPONS = [
-  { id: 'pistol', name: 'Pistol', key: '1', damage: 34, range: 42, rate: 0.28, ammo: Infinity, spread: 0.02 },
-  { id: 'smg', name: 'SMG', key: '2', damage: 16, range: 36, rate: 0.09, ammo: 240, spread: 0.06 },
-  { id: 'shotgun', name: 'Shotgun', key: '3', damage: 22, range: 18, rate: 0.7, ammo: 40, spread: 0.16, pellets: 5 },
-  { id: 'molotov', name: 'Molotov', key: '4', damage: 55, range: 26, rate: 0.9, ammo: 8, spread: 0.03, aoe: 6 },
-];
+export const WEAPONS = {
+  pistol: { name: 'Pistol', dmg: 34, rate: 0.35, range: 42, pellets: 1 },
+  smg: { name: 'SMG', dmg: 16, rate: 0.09, range: 34, pellets: 1 },
+  shotgun: { name: 'Shotgun', dmg: 11, rate: 0.8, range: 18, pellets: 6 },
+  molotov: { name: 'Molotov', dmg: 60, rate: 1.0, range: 26, pellets: 1 },
+};
+export const WEAPON_ORDER = ['pistol', 'smg', 'shotgun', 'molotov'];
 
-export function createPlayer(x, z) {
+export function makePlayer(spawn) {
   return {
-    x, z, angle: 0, heading: 0, health: 100, armor: 0,
-    inCar: false, car: null, speed: 0,
-    weapon: 0, ammo: [Infinity, 240, 40, 8], shootCd: 0,
-    crewCd: 0, moving: false,
+    x: spawn.x, z: spawn.z, heading: spawn.heading,
+    onFoot: true, car: null,
+    health: 100, money: 250, respect: 0,
+    weapon: 'pistol',
+    weapons: {
+      pistol: { ammo: Infinity },
+      smg: { ammo: 120 },
+      shotgun: { ammo: 24 },
+      molotov: { ammo: 6 },
+    },
+    upgrades: { engine: 0, armor: 0 },
+    fireCd: 0,
+    crewCd: 0,
+    garageNear: false,
   };
 }
 
-export function updatePlayer(game, dt) {
-  const p = game.player, input = game.input;
-  p.shootCd -= dt; p.crewCd -= dt;
+export function respectRank(respect) {
+  if (respect >= 1400) return 'Raja Caldera';
+  if (respect >= 900) return 'Raja Boardwalk';
+  if (respect >= 500) return 'Anak Dermaga';
+  if (respect >= 200) return 'Kurir Garam';
+  return 'Pemula Pantai';
+}
 
-  // Weapon select.
-  for (let i = 0; i < 4; i++) if (input.hit(String(i + 1))) { p.weapon = i; game.toast('Senjata', WEAPONS[i].name); }
+/** Aim direction on foot: toward the mouse's ground point, else the facing. */
+function aimHeading(state) {
+  const p = state.player;
+  const px = p.onFoot ? p.x : (p.car ? p.car.x : p.x);
+  const pz = p.onFoot ? p.z : (p.car ? p.car.z : p.z);
+  const m = state._mouseWorld;
+  if (m) {
+    const dx = m.x - px;
+    const dz = m.z - pz;
+    if (Math.hypot(dx, dz) > 0.5) return Math.atan2(dx, -dz);
+  }
+  return p.heading;
+}
 
-  // Crew call: T — Mara sends a getaway car, Tito covers with fire.
-  if (input.hit('t') && p.crewCd <= 0) { game.crewCall(); p.crewCd = 25; }
+export function updatePlayer(state, dt, input, audio) {
+  const p = state.player;
+  p.fireCd -= dt;
+  p.crewCd -= dt;
+  const city = state.city;
 
-  if (p.inCar && p.car) {
-    const throttle = (input.down('w', 'arrowup') ? 1 : 0) - (input.down('s', 'arrowdown') ? 0.7 : 0);
-    const steer = (input.down('a', 'arrowleft') ? -1 : 0) + (input.down('d', 'arrowright') ? 1 : 0);
-    const hard = driveCar(game.city, p.car, throttle, -steer, dt, input.down(' '));
-    if (hard) { p.car.hp -= 6; game.audio.hit(); }
-    p.x = p.car.x; p.z = p.car.z; p.angle = p.car.angle; p.heading = p.car.angle;
-    p.speed = Math.abs(p.car.speed);
-    if (p.car.hp <= 0) {
-      game.toast('Mobil hancur!', 'Keluar dan cari kendaraan lain.');
-      exitCar(game);
+  if (p.onFoot) {
+    // Mouse aim; WASD moves relative to the facing direction.
+    p.heading = aimHeading(state);
+    const run = input.isDown('ShiftLeft') || input.isDown('ShiftRight');
+    const speed = run ? 9 : 6;
+    const f = (input.isDown('KeyW') || input.isDown('ArrowUp') ? 1 : 0) - (input.isDown('KeyS') || input.isDown('ArrowDown') ? 1 : 0);
+    const s = (input.isDown('KeyD') || input.isDown('ArrowRight') ? 1 : 0) - (input.isDown('KeyA') || input.isDown('ArrowLeft') ? 1 : 0);
+    const fx = Math.sin(p.heading);
+    const fz = -Math.cos(p.heading);
+    const rx = Math.cos(p.heading);
+    const rz = Math.sin(p.heading);
+    const mx = (fx * f + rx * s) * speed * dt;
+    const mz = (fz * f + rz * s) * speed * dt;
+    const hit = collideWorld(city, p.x + mx, p.z + mz, 0.5);
+    p.x = hit.x;
+    p.z = hit.z;
+    // Steal / enter the nearest car.
+    if (input.wasPressed('KeyE')) {
+      const car = nearestCar(state, p.x, p.z, 5, (c) => !c.isPlayer);
+      if (car) {
+        if (car.isCop || car.isTarget) {
+          state.police.heat = clamp(state.police.heat + 15, 0, 100);
+          state.police.lastCrime = state.time;
+        }
+        car.isPlayer = true;
+        car.isTraffic = false;
+        p.car = car;
+        p.onFoot = false;
+        state.toast = 'Mobil diambil — ' + (car.isCop ? 'itu mobil GIC!' : 'gas!');
+        if (car.isCop || car.isTarget) audio.sfx('pickup');
+      }
     }
-    if (input.hit('e')) exitCar(game);
-    if (input.hit('f')) game.tryGarage();
+    // Shoot on click or J.
+    if ((input.mouseClicked || input.isDown('KeyJ')) && p.fireCd <= 0) {
+      shoot(state, audio);
+    }
   } else {
-    // On foot: WASD relative to the camera heading.
-    const camYaw = game.camHeading;
-    let mx = 0, mz = 0;
-    if (input.down('w', 'arrowup')) { mx += Math.sin(camYaw); mz += Math.cos(camYaw); }
-    if (input.down('s', 'arrowdown')) { mx -= Math.sin(camYaw); mz -= Math.cos(camYaw); }
-    if (input.down('a', 'arrowleft')) { mx += Math.sin(camYaw - Math.PI / 2); mz += Math.cos(camYaw - Math.PI / 2); }
-    if (input.down('d', 'arrowright')) { mx += Math.sin(camYaw + Math.PI / 2); mz += Math.cos(camYaw + Math.PI / 2); }
-    const len = Math.hypot(mx, mz);
-    p.moving = len > 0;
-    if (len > 0) {
-      const sp = input.down('shift') ? 7.5 : 4.6;
-      p.x += (mx / len) * sp * dt; p.z += (mz / len) * sp * dt;
-      p.angle = Math.atan2(mx / len, mz / len);
-      p.heading = p.angle;
+    // In the car: E gets out.
+    if (input.wasPressed('KeyE')) {
+      const car = p.car;
+      p.x = car.x + Math.cos(car.heading) * 3;
+      p.z = car.z + Math.sin(car.heading) * 3;
+      p.heading = car.heading;
+      p.onFoot = true;
+      car.isPlayer = false;
+      p.car = null;
     }
-    collideCircle(game.city, p, 0.6);
-    p.speed = p.moving ? 4.6 : 0;
-
-    if (input.hit('e')) {
-      const car = nearestCar(game.allCars(), p.x, p.z, 4.5);
-      if (car) enterCar(game, car);
-    }
-    if (input.hit('f')) game.tryGarage();
   }
 
-  // Shooting: mouse click fires toward the camera aim (player heading).
-  if (input.mouse.clicked && !p.inCar) shoot(game);
-  else if (input.mouse.down && p.inCar) { /* drive-by not modelled; horn instead */ }
-  if (input.hit('q')) game.hud.toggleWheel();
-}
-
-export function enterCar(game, car) {
-  const p = game.player;
-  p.inCar = true; p.car = car; car.traffic = false;
-  if (car.missionCar) game.toast('Kendaraan misi', car.name + ' — ikuti penanda kuning.');
-  else {
-    game.toast('Mobil dicuri', car.name);
-    game.addHeat(12, 'pencurian mobil');
+  // Weapon switch 1-4.
+  for (let i = 0; i < 4; i++) {
+    if (input.wasPressed('Digit' + (i + 1))) {
+      p.weapon = WEAPON_ORDER[i];
+      state.toast = WEAPONS[p.weapon].name + ' dipilih';
+    }
   }
-  game.audio.pickup();
+
+  // Garage: F repairs ($200), G engine upgrade ($800), H armour ($600).
+  const g = city.garage;
+  p.garageNear = dist2(p.x, p.z, g.x, g.z) < 16 || (p.car && dist2(p.car.x, p.car.z, g.x, g.z) < 16);
+  if (p.garageNear) {
+    if (input.wasPressed('KeyF') && p.car && p.car.health < 100 && p.money >= 200) {
+      p.money -= 200;
+      p.car.health = 100;
+      state.toast = "Tito memperbaiki mobilmu — $200";
+      audio.sfx('pickup');
+    }
+    if (input.wasPressed('KeyG') && p.upgrades.engine < 2 && p.money >= 800) {
+      p.money -= 800;
+      p.upgrades.engine++;
+      state.toast = 'Mesin ditingkatkan ke level ' + p.upgrades.engine + ' — $800';
+      audio.sfx('mission');
+    }
+    if (input.wasPressed('KeyH') && p.upgrades.armor < 2 && p.money >= 600) {
+      p.money -= 600;
+      p.upgrades.armor++;
+      state.toast = 'Armor dipasang level ' + p.upgrades.armor + ' — $600';
+      audio.sfx('mission');
+    }
+  }
+
+  // Crew call: T — Mara Vela sends a car (60 s cooldown).
+  if (input.wasPressed('KeyT') && p.crewCd <= 0) {
+    p.crewCd = 60;
+    const hx = p.onFoot ? p.x : p.car.x;
+    const hz = p.onFoot ? p.z : p.car.z;
+    const spot = collideWorld(city, hx + 10, hz + 6, 2.5);
+    const car = {
+      x: spot.x, z: spot.z, heading: p.heading, speed: 0,
+      color: [0.9, 0.25, 0.3], isPlayer: false, isCop: false, isTraffic: false,
+      isTarget: false, isAriete: false, health: 100, maxSpeed: 28, accel: 15,
+      axis: 'x', line: spot.z, dir: 1, turnCd: 0, hidden: false, ramCd: 0,
+    };
+    state.cars.push(car);
+    state.toast = 'Mara Vela mengirim mobil merah ke lokasimu';
+    audio.sfx('pickup');
+  }
 }
 
-export function exitCar(game) {
-  const p = game.player;
-  if (!p.car) return;
-  p.x = p.car.x - Math.sin(p.car.angle) * 2.5;
-  p.z = p.car.z - Math.cos(p.car.angle) * 2.5;
-  p.inCar = false; p.car = null;
-}
-
-function shoot(game) {
-  const p = game.player;
-  if (p.shootCd > 0) return;
+/** Fire the current weapon at the aim point. */
+export function shoot(state, audio) {
+  const p = state.player;
   const w = WEAPONS[p.weapon];
-  if (p.ammo[p.weapon] !== Infinity && p.ammo[p.weapon] <= 0) {
-    game.toast('Habis!', w.name + ' kehabisan amunisi — isi di garage.');
-    p.shootCd = 0.4; return;
+  const slot = p.weapons[p.weapon];
+  if (slot.ammo <= 0) {
+    state.toast = w.name + ' kehabisan amunisi';
+    p.fireCd = 0.3;
+    return;
   }
-  p.shootCd = w.rate;
-  if (p.ammo[p.weapon] !== Infinity) p.ammo[p.weapon]--;
-  game.audio.shoot();
-  const pellets = w.pellets || 1;
-  let hitAnything = false;
-  for (let i = 0; i < pellets; i++) {
-    const aim = p.angle + (Math.random() - 0.5) * w.spread * 2;
-    const hx = p.x + Math.sin(aim) * w.range, hz = p.z + Math.cos(aim) * w.range;
-    game.spawnParticle(hx, hz, 1.2, [1, 0.8, 0.2], 0.15);
-    // Hit test: nearest living ped / police car inside the cone.
-    const targets = [];
-    for (const ped of game.peds) if (!ped.dead) targets.push({ x: ped.x, z: ped.z, r: 1.2, obj: ped, kind: 'ped' });
-    for (const c of game.police.cars) targets.push({ x: c.x, z: c.z, r: 2.4, obj: c, kind: 'car' });
-    if (game.police.roadblock) for (const c of game.police.roadblock.cars) targets.push({ x: c.x, z: c.z, r: 2.4, obj: c, kind: 'car' });
-    let best = null, bd = 1e9;
-    for (const t of targets) {
-      const dx = t.x - p.x, dz = t.z - p.z;
-      const d = Math.hypot(dx, dz);
-      if (d > w.range + t.r) continue;
-      const ang = Math.atan2(dx, dz);
-      if (Math.abs(angleDiff(aim, ang)) > 0.22 + t.r / Math.max(d, 1)) continue;
-      if (d < bd) { bd = d; best = t; }
+  if (slot.ammo !== Infinity) slot.ammo--;
+  p.fireCd = w.rate;
+  const aim = aimHeading(state);
+  const fx = Math.sin(aim);
+  const fz = -Math.cos(aim);
+  const ox = p.onFoot ? p.x : (p.car ? p.car.x : p.x);
+  const oz = p.onFoot ? p.z : (p.car ? p.car.z : p.z);
+  state.lastShotPos = { x: ox + fx * 6, z: oz + fz * 6 };
+  state.muzzle = { x: ox + fx * 1.6, y: 1.4, z: oz + fz * 1.6, ttl: 0.07 };
+  audio.sfx('shot');
+  state.police.heat = clamp(state.police.heat + 6, 0, 100);
+  state.police.lastCrime = state.time;
+
+  if (p.weapon === 'molotov') {
+    const tx = ox + fx * Math.min(w.range, 20);
+    const tz = oz + fz * Math.min(w.range, 20);
+    state.explosion = { x: tx, z: tz, ttl: 0.6 };
+    audio.sfx('explosion');
+    for (const ped of state.peds) {
+      if (ped.state !== 'down' && dist2(ped.x, ped.z, tx, tz) < 7) {
+        ped.health -= w.dmg;
+        if (ped.health <= 0) { ped.state = 'down'; state.police.heat = clamp(state.police.heat + 20, 0, 100); }
+      }
     }
-    if (best) {
-      hitAnything = true;
-      if (w.aoe) {
-        game.spawnParticle(best.x, best.y || 1, best.z, [1, 0.4, 0.1], 0.5);
-        for (const ped of game.peds) if (dist(ped.x, ped.z, best.x, best.z) < w.aoe) damagePed(game, ped, w.damage);
-      } else if (best.kind === 'ped') damagePed(game, best.obj, w.damage);
-      else { best.obj.hp -= w.damage; if (best.obj.hp <= 0) { best.obj.dead = true; game.onKill(); } }
-      game.spawnParticle(best.x, 1.4, best.z, [1, 0.2, 0.2], 0.25);
+    for (const car of state.cars) {
+      if (!car.hidden && dist2(car.x, car.z, tx, tz) < 7) {
+        car.health -= w.dmg;
+        if (car.health <= 0 && !car.isPlayer) { car.hidden = true; state.police.heat = clamp(state.police.heat + 15, 0, 100); }
+      }
+    }
+    return;
+  }
+
+  // Hitscan: nearest living target inside the range and a 15-degree cone.
+  let best = null;
+  let bestScore = Infinity;
+  const consider = (tx, tz, kind, ref) => {
+    const dx = tx - ox;
+    const dz = tz - oz;
+    const d = Math.hypot(dx, dz);
+    if (d > w.range || d < 0.5) return;
+    const dot = (dx * fx + dz * fz) / d;
+    if (dot < 0.96) return;
+    const score = d + (1 - dot) * 40;
+    if (score < bestScore) { bestScore = score; best = { kind, ref, d }; }
+  };
+  for (const ped of state.peds) {
+    if (ped.state !== 'down') consider(ped.x, ped.z, 'ped', ped);
+  }
+  for (const car of state.cars) {
+    if (!car.hidden && !car.isPlayer) consider(car.x, car.z, 'car', car);
+  }
+  if (!best) return;
+  const dmg = w.dmg * w.pellets;
+  if (best.kind === 'ped') {
+    best.ref.health -= dmg;
+    if (best.ref.health <= 0) {
+      best.ref.state = 'down';
+      state.police.heat = clamp(state.police.heat + 20, 0, 100);
+      state.police.lastCrime = state.time;
+      if (best.ref.isGuard) state.missionKills = (state.missionKills || 0) + 1;
+    }
+  } else {
+    best.ref.health -= dmg;
+    if (best.ref.health <= 0) {
+      best.ref.hidden = true;
+      state.police.heat = clamp(state.police.heat + 15, 0, 100);
+      state.police.lastCrime = state.time;
+      if (best.ref.isTarget) state.missionTargetDown = true;
+      state.explosion = { x: best.ref.x, z: best.ref.z, ttl: 0.5 };
+      audio.sfx('explosion');
     }
   }
-  if (hitAnything) game.audio.hit();
-  game.addHeat(6, 'tembakan di jalan');
-  game.panicAt = { x: p.x, z: p.z };
 }
 
-function damagePed(game, ped, dmg) {
-  ped.hp -= dmg;
-  if (ped.hp <= 0 && !ped.dead) {
-    ped.dead = true;
-    game.onKill();
-    if (ped.hostile) game.toast('Target tumbang', 'Satu penjaga lagi berkurang.');
-    else game.addHeat(8, 'warga tertembak');
+export function damagePlayer(state, amount) {
+  const p = state.player;
+  const reduced = amount * (1 - p.upgrades.armor * 0.2);
+  p.health -= reduced;
+  if (p.health <= 0) {
+    p.health = 0;
+    state.mode = 'wasted';
   }
 }

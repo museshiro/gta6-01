@@ -3,142 +3,130 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CALDERA VIVA — Open-World Crime di Isla Caldera</title>
+<title>CALDERA VIVA — Isla Caldera</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1210; font-family: 'Segoe UI', system-ui, sans-serif; color: #fff; }
-  #game-canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
-  .panel { background: rgba(12, 10, 14, 0.72); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 10px; padding: 8px 12px; backdrop-filter: blur(3px); }
-  #top-left { position: absolute; top: 12px; left: 12px; font-size: 15px; line-height: 1.5; }
-  #top-left b { color: #ffd34c; }
-  #hud-district { color: #7dd8ff; }
-  #wanted { position: absolute; top: 12px; right: 12px; font-size: 26px; letter-spacing: 2px; text-align: right; }
-  #wanted .star { color: rgba(255, 255, 255, 0.25); text-shadow: 0 0 4px #000; }
-  #wanted .star.on { color: #ffcf00; }
-  #dispatch { position: absolute; top: 52px; right: 12px; max-width: 320px; font-size: 12px; color: #ffd9a0; text-align: right; }
-  #objective-box { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); text-align: center; min-width: 340px; }
-  #objective-title { color: #ffd34c; font-weight: 800; letter-spacing: 1px; font-size: 15px; }
-  #objective { font-size: 13px; color: #fff; }
-  #bottom-left { position: absolute; left: 12px; bottom: 12px; width: 250px; font-size: 13px; }
-  .bar { height: 12px; background: rgba(255, 255, 255, 0.15); border-radius: 6px; overflow: hidden; margin: 3px 0 6px; }
-  .bar > div { height: 100%; }
-  #health-fill { background: linear-gradient(90deg, #ff5a4e, #ff8a5c); width: 100%; }
-  #armor-fill { background: linear-gradient(90deg, #4e9bff, #7dd8ff); width: 0%; }
-  #weapon-line { display: flex; justify-content: space-between; }
-  #speed-box { position: absolute; right: 204px; bottom: 12px; font-size: 22px; font-weight: 800; color: #ffd34c; display: none; }
-  #minimap { position: absolute; right: 12px; bottom: 12px; width: 180px; height: 180px; border: 2px solid rgba(255, 255, 255, 0.35); border-radius: 8px; background: #222; }
-  #race-info { position: absolute; bottom: 204px; right: 12px; font-size: 13px; color: #8dff9a; text-align: right; }
-  #hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); font-size: 11.5px; color: rgba(255, 255, 255, 0.75); background: rgba(0, 0, 0, 0.45); padding: 5px 10px; border-radius: 6px; white-space: nowrap; }
-  #toast { position: absolute; top: 96px; left: 50%; transform: translateX(-50%) translateY(-8px); text-align: center; opacity: 0; transition: opacity 0.25s, transform 0.25s; min-width: 380px; }
-  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-  #toast-title { color: #ffd34c; font-size: 19px; font-weight: 800; letter-spacing: 1px; }
-  #toast-body { font-size: 13.5px; }
-  /* Weapon wheel */
-  #wheel { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: none; gap: 10px; z-index: 8; }
-  #wheel.show { display: flex; }
-  .wheel-slot { width: 128px; padding: 14px 10px; text-align: center; background: rgba(12, 10, 14, 0.85); border: 2px solid rgba(255, 255, 255, 0.25); border-radius: 10px; font-size: 14px; pointer-events: auto; cursor: pointer; }
-  .wheel-slot.sel { border-color: #ffd34c; background: rgba(80, 60, 10, 0.9); }
-  .wheel-slot b { color: #ffd34c; font-size: 18px; margin-right: 6px; }
-  /* Full screens */
-  .screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 20; background: linear-gradient(160deg, rgba(60, 10, 20, 0.88), rgba(20, 10, 40, 0.92)); }
-  .screen.show { display: flex; }
-  .card { max-width: 680px; width: 92%; background: rgba(10, 8, 12, 0.85); border: 1px solid #ff7a3c; border-radius: 16px; padding: 28px 32px; text-align: center; max-height: 92vh; overflow-y: auto; }
-  .card h1 { font-size: 44px; letter-spacing: 4px; color: #ffd34c; text-shadow: 0 3px 0 #c22e00, 0 6px 18px rgba(0, 0, 0, 0.6); }
-  .card h2 { font-size: 15px; color: #ff9a6c; letter-spacing: 2px; margin: 4px 0 14px; }
-  .card p { font-size: 14.5px; line-height: 1.6; color: #f2e8d8; margin-bottom: 12px; }
-  .card .controls { font-size: 13px; color: #cfe8ff; text-align: left; display: inline-block; line-height: 1.9; margin: 6px 0 14px; }
-  .card .controls b { color: #ffd34c; }
-  button { pointer-events: auto; cursor: pointer; background: linear-gradient(180deg, #ff8a3c, #e04e00); color: #fff; border: none; border-radius: 9px; padding: 12px 26px; font-size: 16px; font-weight: 800; letter-spacing: 1px; margin: 5px; box-shadow: 0 4px 0 #8a2a00; }
-  button:active { transform: translateY(3px); box-shadow: none; }
-  button.ghost { background: rgba(255, 255, 255, 0.14); box-shadow: 0 4px 0 rgba(0, 0, 0, 0.4); }
-  #pause-stats, #garage-info { font-size: 14px; line-height: 1.7; text-align: left; margin: 10px 0; }
-  .mrow { font-size: 13px; text-align: left; padding: 5px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
-  .mrow.done { color: #8dff9a; }
-  .mrow.active { color: #ffd34c; font-weight: 700; }
-  #garage-panel { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 15; display: none; width: 420px; }
-  #garage-panel.show { display: block; }
-  #garage-panel h2 { color: #ffd34c; margin-bottom: 6px; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1210;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif; color: #fff; }
+  #gl, #map2d { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #gl { cursor: crosshair; }
+  #map2d { display: none; }
+  #hud { display: none; position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  .panel { background: rgba(12, 10, 14, 0.62); border: 1px solid rgba(255, 210, 63, 0.35);
+    border-radius: 8px; padding: 8px 12px; backdrop-filter: blur(2px); }
+  #topleft { position: absolute; top: 12px; left: 12px; min-width: 250px; }
+  #stars { font-size: 22px; letter-spacing: 3px; color: #ffd23f; text-shadow: 0 0 8px rgba(255, 60, 40, 0.8); }
+  #money { font-size: 26px; font-weight: 800; color: #7dff8a; }
+  #healthBar { height: 10px; background: #333; border-radius: 5px; overflow: hidden; margin-top: 4px; }
+  #healthFill { height: 100%; width: 100%; background: #4caf50; }
+  #healthText, #respect { font-size: 12px; color: #ddd; }
+  #topright { position: absolute; top: 12px; right: 12px; text-align: right; }
+  #minimap { width: 180px; height: 180px; border: 2px solid rgba(255, 210, 63, 0.5); border-radius: 6px; background: #0e2f4a; }
+  #clock { font-size: 20px; font-weight: 700; margin-top: 4px; }
+  #radio, #weapon { font-size: 13px; color: #ffd23f; }
+  #objective { position: absolute; left: 12px; bottom: 12px; max-width: 460px; font-size: 15px; line-height: 1.4; }
+  #objective b { color: #ffd23f; }
+  #toast { position: absolute; left: 50%; bottom: 88px; transform: translateX(-50%);
+    font-size: 17px; font-weight: 600; text-align: center; max-width: 640px;
+    background: rgba(12, 10, 14, 0.72); border: 1px solid rgba(255, 210, 63, 0.5);
+    border-radius: 8px; padding: 10px 18px; opacity: 0; transition: opacity 0.3s; }
+  #garageHint { display: none; position: absolute; right: 12px; bottom: 12px; font-size: 13px;
+    background: rgba(12, 10, 14, 0.72); border: 1px solid #ff9a3c; border-radius: 8px; padding: 8px 12px; }
+  #wheel { display: none; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    gap: 10px; z-index: 6; }
+  #wheel div { background: rgba(12, 10, 14, 0.85); border: 1px solid #666; border-radius: 8px;
+    padding: 12px 16px; font-size: 15px; }
+  #wheel div.sel { border-color: #ffd23f; color: #ffd23f; }
+  #wheel b { color: #ffd23f; margin-right: 6px; }
+  .overlay { display: none; position: fixed; inset: 0; z-index: 10; align-items: center; justify-content: center;
+    background: linear-gradient(160deg, rgba(30, 8, 4, 0.92), rgba(10, 12, 30, 0.94)); }
+  .card { max-width: 620px; width: 92%; background: rgba(20, 12, 10, 0.9); border: 1px solid #ff9a3c;
+    border-radius: 14px; padding: 28px 32px; text-align: center; }
+  .card h1 { font-size: 44px; letter-spacing: 4px; color: #ff9a3c; text-shadow: 0 0 24px rgba(255, 120, 40, 0.6); }
+  .card h2 { font-size: 15px; letter-spacing: 3px; color: #ffd23f; margin: 4px 0 14px; }
+  .card p { font-size: 14px; line-height: 1.6; color: #eee; margin-bottom: 12px; }
+  .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; text-align: left;
+    font-size: 13px; color: #ddd; margin: 10px 0 18px; }
+  .controls b { color: #ffd23f; }
+  button { pointer-events: auto; cursor: pointer; font-size: 16px; font-weight: 700; letter-spacing: 1px;
+    color: #1a1210; background: #ffd23f; border: none; border-radius: 8px; padding: 12px 26px; margin: 4px; }
+  button:hover { background: #ffdf6b; }
+  button.ghost { background: transparent; color: #ffd23f; border: 1px solid #ffd23f; }
+  #pauseStats, #pauseMissions, #pauseStanding { text-align: left; font-size: 13px; line-height: 1.7; color: #ddd; margin: 8px 0; }
+  #pauseMissions div { padding-left: 8px; }
+  .bar { display: inline-block; width: 140px; height: 8px; background: #333; border-radius: 4px; overflow: hidden; vertical-align: middle; }
+  .bar div { height: 100%; background: #4caf50; }
+  #test-results { display: none; position: fixed; left: 8px; top: 8px; z-index: 20; background: #000;
+    color: #0f0; font: 12px monospace; white-space: pre; padding: 8px; max-height: 90vh; overflow: auto; }
+  #saveNote { font-size: 12px; color: #aaa; margin-top: 8px; }
 </style>
 </head>
 <body>
-<canvas id="game-canvas"></canvas>
+<canvas id="gl"></canvas>
+<canvas id="map2d"></canvas>
 
 <div id="hud">
-  <div id="top-left" class="panel">
-    <div>💵 <b id="hud-cash">$500</b> &nbsp;•&nbsp; <span id="hud-respect">Respect 0</span></div>
-    <div>🕒 <span id="hud-time">17:30</span> &nbsp;•&nbsp; 📍 <span id="hud-district">Puerto Brasa</span></div>
+  <div id="topleft" class="panel">
+    <div id="stars">☆☆☆☆☆</div>
+    <div id="money">$250</div>
+    <div id="healthBar"><div id="healthFill"></div></div>
+    <div id="healthText">100 HP</div>
+    <div id="respect">Pemula Pantai · 0 respect</div>
   </div>
-  <div id="wanted"></div>
-  <div id="dispatch" class="panel">Central GIC: semua unit siaga, Isla Caldera aman.</div>
-  <div id="objective-box" class="panel">
-    <div id="objective-title">CALDERA VIVA</div>
-    <div id="objective">Tekan M untuk misi pertama.</div>
+  <div id="topright">
+    <canvas id="minimap" width="180" height="180"></canvas>
+    <div id="clock" class="panel">18:12</div>
+    <div id="radio" class="panel">○ RADIO BRASA</div>
+    <div id="weapon" class="panel">Pistol · ∞</div>
   </div>
-  <div id="bottom-left" class="panel">
-    <div id="health-num">100 HP</div>
-    <div class="bar"><div id="health-fill"></div></div>
-    <div>🛡️ Armor</div>
-    <div class="bar"><div id="armor-fill"></div></div>
-    <div id="weapon-line"><span>🔫 <b id="weapon-name">Pistol</b></span><span id="weapon-ammo">∞</span></div>
-  </div>
-  <div id="speed-box" class="panel"><span id="speed">0 km/h</span></div>
-  <canvas id="minimap" width="180" height="180"></canvas>
-  <div id="race-info"></div>
-  <div id="toast" class="panel"><div id="toast-title"></div><div id="toast-body"></div></div>
+  <div id="objective" class="panel"><b>Misi:</b> <span id="objectiveText">Tekan M untuk misi pertama.</span></div>
+  <div id="toast"></div>
+  <div id="garageHint">GARASI TITO — <b>F</b> perbaiki $200 · <b>G</b> mesin $800 · <b>H</b> armor $600</div>
   <div id="wheel"></div>
-  <div id="hint">WASD jalan/kemudi • E masuk/keluar mobil • Klik tembak • Q weapon wheel • T crew call • M misi • B balapan • F garage • R radio • C kamera • Esc jeda</div>
 </div>
 
-<div id="garage-panel" class="panel">
-  <h2>🔧 GARAGE TITO</h2>
-  <div id="garage-info"></div>
-  <button id="btn-repair">Perbaiki — $200</button>
-  <button id="btn-engine">Upgrade Mesin</button>
-  <button id="btn-armor">Upgrade Armor</button>
-  <button id="btn-close-garage" class="ghost">Tutup</button>
-</div>
-
-<div id="start-screen" class="screen show">
+<div id="start" class="overlay" style="display:flex">
   <div class="card">
     <h1>CALDERA VIVA</h1>
-    <h2>ISLA CALDERA • PUERTO BRASA • SENJA TERIK</h2>
-    <p>Sebuah pulau vulkanik, satu kota pesisir, dan kamu — pendatang baru yang
-    harus merebut jalanan dari kartel. Mara Vela mengemudi, Tito Branco
-    memperbaiki dan menembak, dan Guardia Insular de Caldera (GIC) tidak pernah
-    tidur: roadblock MURALLA, unit RAM/PIT ARIETE, dan helikopter CORMORÁN-1.</p>
-    <p><b>10 misi cerita.</b> Dari mencuri coupe di dermaga sampai menyerbu
-    mansion kartel dengan wanted lima bintang — lalu kabur ke laut.</p>
+    <h2>ISLA CALDERA · PUERTO BRASA</h2>
+    <p>Sebuah pulau vulkanik, sebuah kota pesisir yang terbakar senja, dan kamu —
+    kurir baru Tito Branco. Guardia Insular de Caldera mengawasi setiap jalan.
+    Sepuluh misi. Satu pulau. Jadilah <b>Raja Caldera</b>.</p>
     <div class="controls">
-      <b>WASD</b> jalan / kemudi &nbsp; <b>Shift</b> lari &nbsp; <b>E</b> masuk / keluar mobil<br>
-      <b>Klik</b> tembak &nbsp; <b>Q</b> weapon wheel (1–4 pilih) &nbsp; <b>T</b> crew call<br>
-      <b>M</b> mulai misi &nbsp; <b>B</b> balapan jalanan &nbsp; <b>F</b> garage (di markas)<br>
-      <b>R</b> radio &nbsp; <b>C</b> kamera &nbsp; <b>Esc</b> jeda / dashboard &nbsp; <b>Drag mouse</b> putar kamera
+      <div><b>W A S D</b> — jalan / mengemudi</div><div><b>Mouse</b> — membidik, klik menembak</div>
+      <div><b>E</b> — masuk / keluar mobil</div><div><b>Spasi</b> — rem tangan</div>
+      <div><b>1–4</b> — ganti senjata · <b>Q</b> — weapon wheel</div><div><b>M</b> — mulai misi · <b>B</b> — balapan</div>
+      <div><b>T</b> — panggil Mara (kirim mobil)</div><div><b>R</b> — radio · <b>5</b> — ganti stasiun</div>
+      <div><b>C</b> — kamera chase / iso</div><div><b>Esc</b> — jeda &amp; dashboard</div>
     </div>
-    <br>
-    <button id="btn-start">▶ MULAI</button>
-    <button id="btn-continue" class="ghost">↻ LANJUTKAN SAVE</button>
-    <p style="font-size:12px; color:#9fb4c8; margin-top:10px;">Game orisinal — dunia prosedural WebGL, tanpa aset luar, tanpa jaringan. Progress tersimpan otomatis di browser.</p>
+    <button id="btnStart">MULAI</button>
+    <button id="btnContinue" class="ghost">LANJUTKAN SAVE</button>
+    <div id="saveNote">Progress tersimpan otomatis setiap misi selesai.</div>
   </div>
 </div>
 
-<div id="pause-screen" class="screen">
+<div id="pause" class="overlay">
   <div class="card">
-    <h1 style="font-size:30px;">⏸ JEDA — DASHBOARD</h1>
-    <div id="pause-stats"></div>
-    <h2 style="text-align:left;">MISI CERITA</h2>
-    <div id="mission-list"></div>
-    <h2 style="text-align:left; margin-top:10px;">DISTRICT STANDING</h2>
-    <div id="district-list"></div>
-    <br>
-    <button id="btn-resume">▶ LANJUTKAN</button>
-    <button id="btn-save" class="ghost">💾 SIMPAN</button>
-    <button id="btn-load" class="ghost">📂 MUAT SAVE</button>
-    <button id="btn-abort" class="ghost">✖ BATALKAN MISI</button>
-    <button id="btn-menu" class="ghost">MENU UTAMA</button>
+    <h1 style="font-size:30px">JEDA — DASHBOARD</h1>
+    <div id="pauseStats"></div>
+    <h2>MISI</h2>
+    <div id="pauseMissions"></div>
+    <h2>DISTRICT STANDING</h2>
+    <div id="pauseStanding"></div>
+    <button id="btnResume">LANJUTKAN</button>
+    <button id="btnRestart" class="ghost">MULAI ULANG</button>
   </div>
 </div>
 
+<div id="end" class="overlay">
+  <div class="card">
+    <h1 id="endTitle" style="font-size:32px">DITANGKAP GIC</h1>
+    <p id="endText"></p>
+    <button id="btnEnd">KEMBALI KE PULAU</button>
+  </div>
+</div>
+
+<div id="test-results"></div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

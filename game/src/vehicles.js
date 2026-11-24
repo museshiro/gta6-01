@@ -1,95 +1,177 @@
-// vehicles.js — arcade car physics and the traffic that fills Isla Caldera.
-// Every car is a plain object: {x, z, angle, speed, color, ...} so the
-// renderer, the police and the missions all share one shape.
+// vehicles.js — cars for CALDERA VIVA: the player's car, traffic and the cars
+// the police and the missions drive. Arcade physics: throttle, steering, a
+// handbrake, building collision and car-to-car bumps. No physics library.
 
-import { mulberry32, clamp, range, pick, dist } from './utils.js';
-import { collideCircle, WORLD_BOUND } from './city.js';
+import { clamp, angleLerp, dist2 } from './utils.js';
+import { collideWorld, ROAD_LINES, nearestRoadPoint } from './city.js';
 
-export const CAR_DEFS = {
-  coupe: { name: 'Vela Coupe', accel: 26, top: 34, grip: 3.2, color: [0.85, 0.25, 0.15] },
-  sedan: { name: 'Brasa Sedan', accel: 20, top: 27, grip: 2.8, color: [0.2, 0.4, 0.75] },
-  van: { name: 'Van Lapis Baja', accel: 15, top: 23, grip: 2.4, color: [0.35, 0.35, 0.38], armor: true },
-  taxi: { name: 'Taksi Brasa', accel: 19, top: 26, grip: 2.8, color: [0.95, 0.8, 0.15] },
-  pickup: { name: 'Pickup Tito', accel: 22, top: 29, grip: 3.0, color: [0.25, 0.7, 0.35] },
-  police: { name: 'GIC Patrol', accel: 24, top: 31, grip: 3.4, color: [0.1, 0.15, 0.35] },
-};
+const TRAFFIC_COLORS = [
+  [0.75, 0.75, 0.78], [0.85, 0.3, 0.25], [0.25, 0.45, 0.85], [0.9, 0.75, 0.3],
+  [0.3, 0.6, 0.35], [0.55, 0.35, 0.65], [0.85, 0.55, 0.2], [0.4, 0.4, 0.45],
+];
 
-export function makeCar(defKey, x, z, angle) {
-  const def = CAR_DEFS[defKey];
+export function makeCar(x, z, heading, color, opts = {}) {
   return {
-    def: defKey, name: def.name, x, z, angle, speed: 0,
-    accel: def.accel, top: def.top, grip: def.grip,
-    color: def.color.slice(), hp: 100, armor: !!def.armor, traffic: false,
+    x, z, heading, speed: 0,
+    color,
+    isPlayer: !!opts.isPlayer,
+    isCop: !!opts.isCop,
+    isTraffic: !!opts.isTraffic,
+    isTarget: !!opts.isTarget,
+    isAriete: !!opts.isAriete,
+    health: opts.health ?? 100,
+    maxSpeed: opts.maxSpeed ?? 24,
+    accel: opts.accel ?? 13,
+    axis: opts.axis || 'x',
+    line: opts.line ?? z,
+    dir: opts.dir ?? 1,
+    turnCd: 0,
+    hidden: false,
+    ramCd: 0,
   };
 }
 
-// Arcade drive: throttle steers with speed, friction bleeds it off, buildings
-// stop the car. Returns true when a wall was hit hard.
-export function driveCar(city, car, throttle, steer, dt, handbrake) {
-  const forward = throttle;
-  car.speed += forward * car.accel * dt;
-  car.speed -= car.speed * (handbrake ? 3.2 : 0.9) * dt;
-  if (throttle === 0) car.speed -= car.speed * 1.4 * dt;
-  car.speed = clamp(car.speed, -car.top * 0.45, car.top);
-  const turn = steer * car.grip * dt * clamp(Math.abs(car.speed) / 8, 0, 1) * (car.speed < 0 ? -1 : 1);
-  car.angle += turn;
-  const nx = car.x + Math.sin(car.angle) * car.speed * dt;
-  const nz = car.z + Math.cos(car.angle) * car.speed * dt;
-  const before = { x: car.x, z: car.z };
-  car.x = nx; car.z = nz;
-  const hit = collideCircle(city, car, 1.9);
-  if (hit) {
-    const impact = Math.abs(car.speed);
-    car.speed *= -0.25;
-    return impact > 6;
-  }
-  if (Math.abs(car.x) >= WORLD_BOUND - 1 || Math.abs(car.z) >= WORLD_BOUND - 1) car.speed *= 0.9;
-  return false;
+export function trafficColor(rng) {
+  return TRAFFIC_COLORS[Math.floor(rng() * TRAFFIC_COLORS.length)];
 }
 
-export function createTraffic(city, count) {
-  const rng = mulberry32(777);
-  const cars = [];
-  const colors = [[0.85, 0.15, 0.15], [0.15, 0.35, 0.75], [0.95, 0.85, 0.25], [0.25, 0.75, 0.35], [0.85, 0.85, 0.85], [0.15, 0.15, 0.18], [0.95, 0.45, 0.10], [0.6, 0.3, 0.7]];
-  for (let i = 0; i < count; i++) {
-    const alongX = rng() < 0.5;
-    const road = pick(rng, alongX ? city.roadsX : city.roadsZ);
-    const t = range(rng, -200, 200);
-    const c = makeCar(pick(rng, ['sedan', 'sedan', 'taxi', 'pickup', 'coupe']), alongX ? t : road, alongX ? road : t, alongX ? (rng() < 0.5 ? 0 : Math.PI) : (rng() < 0.5 ? Math.PI / 2 : -Math.PI / 2));
-    c.color = pick(rng, colors).slice();
-    c.traffic = true; c.speed = range(rng, 7, 12); c.axis = alongX ? 'x' : 'z'; c.lane = road;
-    c.dir = c.angle;
-    cars.push(c);
-  }
-  return cars;
+/** Keep ~9 traffic cars on the roads around the player. */
+export function spawnTraffic(state, dt) {
+  const p = state.player;
+  const px = p.onFoot ? p.x : p.car.x;
+  const pz = p.onFoot ? p.z : p.car.z;
+  const alive = state.cars.filter((c) => c.isTraffic && !c.hidden);
+  if (alive.length >= 9) return;
+  if (state._trafficTimer === undefined) state._trafficTimer = 0;
+  state._trafficTimer -= dt;
+  if (state._trafficTimer > 0) return;
+  state._trafficTimer = 0.8;
+  const rng = state.rng;
+  const rp = nearestRoadPoint(px + (rng() - 0.5) * 200, pz + (rng() - 0.5) * 200);
+  const d = dist2(rp.x, rp.z, px, pz);
+  if (d < 45 || d > 170) return;
+  const car = makeCar(rp.x, rp.z, rp.axis === 'x' ? (rng() < 0.5 ? Math.PI / 2 : -Math.PI / 2) : (rng() < 0.5 ? 0 : Math.PI), trafficColor(rng), {
+    isTraffic: true,
+    axis: rp.axis,
+    line: rp.axis === 'x' ? rp.x : rp.z,
+    dir: rng() < 0.5 ? 1 : -1,
+    maxSpeed: 8 + rng() * 4,
+  });
+  car.speed = car.maxSpeed * 0.8;
+  state.cars.push(car);
 }
 
-// Traffic cruises straight along its road and wraps at the island edge.
-export function updateTraffic(city, cars, player, dt) {
-  for (const c of cars) {
-    const ahead = { x: c.x + Math.sin(c.angle) * 6, z: c.z + Math.cos(c.angle) * 6 };
-    let slow = false;
-    if (player && player.inCar && dist(ahead.x, ahead.z, player.car.x, player.car.z) < 5) slow = true;
-    if (player && !player.inCar && dist(ahead.x, ahead.z, player.x, player.z) < 4) slow = true;
-    for (const o of cars) {
-      if (o !== c && dist(ahead.x, ahead.z, o.x, o.z) < 5) { slow = true; break; }
+/** Traffic follows its road, turns at intersections, queues behind slow cars. */
+export function updateTraffic(state, dt) {
+  const p = state.player;
+  const px = p.onFoot ? p.x : p.car.x;
+  const pz = p.onFoot ? p.z : p.car.z;
+  for (const car of state.cars) {
+    if (!car.isTraffic || car.hidden) continue;
+    car.turnCd -= dt;
+    // Slow down for a car ahead in the same lane.
+    let targetSpeed = car.maxSpeed;
+    for (const other of state.cars) {
+      if (other === car || other.hidden) continue;
+      const dx = other.x - car.x;
+      const dz = other.z - car.z;
+      const ahead = car.axis === 'x' ? dx * car.dir : dz * car.dir;
+      const side = car.axis === 'x' ? Math.abs(dz) : Math.abs(dx);
+      if (ahead > 0 && ahead < 12 && side < 3) targetSpeed = Math.min(targetSpeed, Math.max(0, other.speed - 1));
     }
-    const target = slow ? 0 : c.top * 0.45;
-    c.speed += (target - c.speed) * Math.min(1, dt * 1.5);
-    c.x += Math.sin(c.angle) * c.speed * dt;
-    c.z += Math.cos(c.angle) * c.speed * dt;
-    if (c.axis === 'x' && Math.abs(c.x) > 205) c.x = -Math.sign(c.x) * 205;
-    if (c.axis === 'z' && Math.abs(c.z) > 205) c.z = -Math.sign(c.z) * 205;
-    collideCircle(city, c, 1.9);
+    car.speed += clamp(targetSpeed - car.speed, -10 * dt, 6 * dt);
+    if (car.axis === 'x') car.x += car.dir * car.speed * dt;
+    else car.z += car.dir * car.speed * dt;
+    // Turn at an intersection sometimes.
+    const cross = car.axis === 'x' ? car.z : car.x;
+    const nearLine = ROAD_LINES.find((l) => Math.abs(cross - l) < 2.5);
+    if (nearLine !== undefined && car.turnCd <= 0 && state.rng() < dt * 0.6) {
+      car.axis = car.axis === 'x' ? 'z' : 'x';
+      car.line = nearLine;
+      if (car.axis === 'x') { car.z = nearLine; car.heading = car.dir > 0 ? Math.PI / 2 : -Math.PI / 2; }
+      else { car.x = nearLine; car.heading = car.dir > 0 ? Math.PI : 0; }
+      car.dir = state.rng() < 0.5 ? 1 : -1;
+      car.turnCd = 3;
+    }
+    // Heading follows the axis.
+    const want = car.axis === 'x' ? (car.dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (car.dir > 0 ? Math.PI : 0);
+    car.heading = angleLerp(car.heading, want, Math.min(1, dt * 6));
+    if (dist2(car.x, car.z, px, pz) > 220) car.hidden = true;
+  }
+  state.cars = state.cars.filter((c) => !(c.isTraffic && c.hidden && dist2(c.x, c.z, px, pz) > 220));
+}
+
+/** Player-car arcade physics: throttle, steering, handbrake, collisions. */
+export function updatePlayerCar(state, dt, input, audio) {
+  const car = state.player.car;
+  const city = state.city;
+  const { throttle, steer } = input;
+  const handbrake = input.handbrake;
+  const upgrade = state.player.upgrades.engine;
+  const maxSpeed = car.maxSpeed * (1 + upgrade * 0.15);
+  const maxReverse = 9;
+  if (throttle > 0) car.speed += car.accel * throttle * dt;
+  else if (throttle < 0) {
+    if (car.speed > 0.5) car.speed -= 22 * dt; // brake
+    else car.speed -= 8 * dt; // reverse
+  } else {
+    car.speed -= Math.sign(car.speed) * Math.min(Math.abs(car.speed), 6 * dt);
+  }
+  car.speed = clamp(car.speed, -maxReverse, maxSpeed);
+  const steerRate = 2.1 * clamp(Math.abs(car.speed) / 8, 0.25, 1) * (handbrake ? 1.7 : 1);
+  car.heading += steer * steerRate * dt * (car.speed >= 0 ? 1 : -1);
+  if (handbrake) car.speed *= Math.max(0, 1 - 0.9 * dt);
+  const fx = Math.sin(car.heading);
+  const fz = -Math.cos(car.heading);
+  const nx = car.x + fx * car.speed * dt;
+  const nz = car.z + fz * car.speed * dt;
+  const hit = collideWorld(city, nx, nz, 2.1);
+  const crashed = Math.abs(hit.x - nx) > 0.01 || Math.abs(hit.z - nz) > 0.01;
+  if (crashed && Math.abs(car.speed) > 9) {
+    audio.sfx('crash');
+    car.health -= Math.abs(car.speed) * 0.6;
+    if (car.health <= 0) {
+      // Wrecked: the player stumbles out on foot.
+      state.player.onFoot = true;
+      state.player.x = car.x + 3;
+      state.player.z = car.z + 3;
+      state.player.heading = car.heading;
+      car.hidden = true;
+      state.player.car = null;
+    }
+  }
+  if (crashed) car.speed *= 0.35;
+  car.x = hit.x;
+  car.z = hit.z;
+  // Car-to-car bumps.
+  for (const other of state.cars) {
+    if (other === car || other.hidden) continue;
+    const d = dist2(car.x, car.z, other.x, other.z);
+    if (d < 4.4 && d > 0.01) {
+      const push = (4.4 - d) / 2;
+      const ux = (car.x - other.x) / d;
+      const uz = (car.z - other.z) / d;
+      car.x += ux * push;
+      car.z += uz * push;
+      other.x -= ux * push;
+      other.z -= uz * push;
+      if (Math.abs(car.speed) > 6) {
+        other.speed = Math.max(other.speed, car.speed * 0.4);
+        if (other.isCop) other.health -= 4;
+      }
+      car.speed *= 0.92;
+    }
   }
 }
 
-// Nearest drivable car to a point (traffic, parked or mission cars).
-export function nearestCar(cars, x, z, maxD) {
-  let best = null, bd = maxD * maxD;
-  for (const c of cars) {
-    const d2 = (c.x - x) * (c.x - x) + (c.z - z) * (c.z - z);
-    if (d2 < bd) { bd = d2; best = c; }
+export function nearestCar(state, x, z, maxDist, filter) {
+  let best = null;
+  let bd = maxDist;
+  for (const car of state.cars) {
+    if (car.hidden) continue;
+    if (filter && !filter(car)) continue;
+    const d = dist2(car.x, car.z, x, z);
+    if (d < bd) { bd = d; best = car; }
   }
   return best;
 }

@@ -1,143 +1,165 @@
-// hud.js — every DOM surface of CALDERA VIVA: the HUD, minimap, weapon
-// wheel, garage panel, pause dashboard, start screen and toasts.
+// hud.js — the DOM overlay of CALDERA VIVA: wanted stars, money, health,
+// the mission objective, the minimap, the weapon wheel, the radio readout,
+// toasts, and the start / pause-dashboard / end screens. The 3D view stays
+// in the canvas; everything readable lives here.
 
-import { fmtCash, fmtTime } from './utils.js';
-import { WEAPONS } from './player.js';
-import { BEACH_Z, WATER_Z, districtAt } from './city.js';
-import { MISSION_DEFS } from './missions.js';
-import { dispatchLine } from './police.js';
+import { fmtMoney } from './utils.js';
+import { currentObjective, MISSIONS } from './missions.js';
+import { WEAPONS, respectRank } from './player.js';
 
-export function createHud(game) {
-  const $ = (id) => document.getElementById(id);
-  const el = {
-    cash: $('hud-cash'), respect: $('hud-respect'), time: $('hud-time'), district: $('hud-district'),
-    wanted: $('wanted'), health: $('health-fill'), armor: $('armor-fill'), healthNum: $('health-num'),
-    weapon: $('weapon-name'), ammo: $('weapon-ammo'), speed: $('speed'), speedBox: $('speed-box'),
-    objective: $('objective'), objectiveTitle: $('objective-title'),
-    dispatch: $('dispatch'), toast: $('toast'), toastTitle: $('toast-title'), toastBody: $('toast-body'),
-    minimap: $('minimap'), start: $('start-screen'), pause: $('pause-screen'),
-    wheel: $('wheel'), garage: $('garage-panel'), hint: $('hint'),
-    pauseStats: $('pause-stats'), missionList: $('mission-list'), districtList: $('district-list'),
-    garageInfo: $('garage-info'), race: $('race-info'),
-  };
-  let toastTimer = 0;
+let el = {};
+let toastTimer = 0;
+let lastToast = '';
 
-  function drawMinimap() {
-    const c = el.minimap, ctx = c.getContext('2d');
-    const S = c.width / 460, OX = c.width / 2, OY = c.height / 2;
-    const X = (x) => OX + x * S, Z = (z) => OY + z * S;
-    ctx.fillStyle = '#2a2f22'; ctx.fillRect(0, 0, c.width, c.height);
-    ctx.fillStyle = '#3a3a3f';
-    for (const rx of game.city.roadsX) ctx.fillRect(X(rx - 6), 0, 12 * S, c.height);
-    for (const rz of game.city.roadsZ) ctx.fillRect(0, Z(rz - 6), c.width, 12 * S);
-    ctx.fillStyle = '#8a7f68';
-    for (const b of game.city.buildings) ctx.fillRect(X(b.x - b.w / 2), Z(b.z - b.d / 2), Math.max(1, b.w * S), Math.max(1, b.d * S));
-    ctx.fillStyle = '#141210'; ctx.fillRect(0, Z(BEACH_Z), c.width, c.height - Z(BEACH_Z));
-    ctx.fillStyle = '#0e4d7a'; ctx.fillRect(0, Z(WATER_Z), c.width, c.height - Z(WATER_Z));
-    const dot = (x, z, r, col) => { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X(x), Z(z), r, 0, 7); ctx.fill(); };
-    if (game.marker) {
-      ctx.strokeStyle = '#ffcc00'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(X(game.marker.x), Z(game.marker.z), 6 + Math.sin(performance.now() / 200) * 2, 0, 7); ctx.stroke();
-    }
-    for (const car of game.police.cars) dot(car.x, car.z, 3, '#4488ff');
-    if (game.police.heli) dot(game.police.heli.x, game.police.heli.z, 4, '#88ccff');
-    for (const car of game.missionCars) dot(car.x, car.z, 3, '#ffcc00');
-    // Player arrow.
-    const p = game.player;
-    ctx.save(); ctx.translate(X(p.x), Z(p.z)); ctx.rotate(-p.angle + Math.PI);
-    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(5, 6); ctx.lineTo(-5, 6); ctx.closePath(); ctx.fill();
-    ctx.restore();
-    // North tick.
-    ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif'; ctx.fillText('N', c.width - 14, 14);
+export function initHud() {
+  const ids = ['hud', 'stars', 'money', 'healthFill', 'healthText', 'respect', 'objective', 'objectiveText',
+    'clock', 'radio', 'weapon', 'minimap', 'toast', 'wheel', 'start', 'pause', 'end',
+    'pauseStats', 'pauseMissions', 'pauseStanding', 'endTitle', 'endText', 'btnStart',
+    'btnContinue', 'btnResume', 'btnRestart', 'btnEnd', 'garageHint', 'saveNote'];
+  for (const id of ids) el[id] = document.getElementById(id);
+}
+
+function fmtHour(hour) {
+  const h = Math.floor(hour) % 24;
+  const m = Math.floor((hour % 1) * 60);
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+export function updateHud(state, dt) {
+  if (!el.hud) return;
+  const p = state.player;
+  const wanted = state.police.wanted;
+  el.stars.textContent = '★'.repeat(wanted) + '☆'.repeat(5 - wanted);
+  el.stars.style.color = wanted >= 3 ? '#ff4444' : '#ffd23f';
+  el.money.textContent = fmtMoney(p.money);
+  el.healthFill.style.width = Math.max(0, p.health) + '%';
+  el.healthFill.style.background = p.health > 50 ? '#4caf50' : p.health > 25 ? '#ff9800' : '#f44336';
+  el.healthText.textContent = Math.ceil(p.health) + ' HP';
+  el.respect.textContent = respectRank(p.respect) + ' · ' + p.respect + ' respect';
+  el.objectiveText.textContent = currentObjective(state);
+  el.clock.textContent = fmtHour(state.hour);
+  el.radio.textContent = (state.audio.radioOn ? '♪ ' : '○ ') + state.audio.stationName();
+  const w = WEAPONS[p.weapon];
+  const ammo = p.weapons[p.weapon].ammo;
+  el.weapon.textContent = w.name + ' · ' + (ammo === Infinity ? '∞' : ammo);
+  el.garageHint.style.display = p.garageNear ? 'block' : 'none';
+  if (state.toast && state.toast !== lastToast) {
+    lastToast = state.toast;
+    toastTimer = 3.5;
+    el.toast.textContent = state.toast;
+    el.toast.style.opacity = '1';
   }
-
-  function update(dt) {
-    const p = game.player, pol = game.police;
-    el.cash.textContent = fmtCash(game.cash);
-    el.respect.textContent = 'Respect ' + game.respect + ' — ' + game.rankName();
-    el.time.textContent = fmtTime(game.hour) + (game.hour >= 19 || game.hour < 6 ? ' 🌙' : ' ☀️');
-    el.district.textContent = districtAt(p.x, p.z).name;
-    let stars = '';
-    for (let i = 0; i < 5; i++) stars += `<span class="star ${i < pol.wanted ? 'on' : ''}">★</span>`;
-    el.wanted.innerHTML = stars;
-    el.health.style.width = Math.max(0, p.health) + '%';
-    el.armor.style.width = Math.max(0, p.armor) + '%';
-    el.healthNum.textContent = Math.round(p.health) + ' HP';
-    const w = WEAPONS[p.weapon];
-    el.weapon.textContent = w.name;
-    el.ammo.textContent = p.ammo[p.weapon] === Infinity ? '∞' : p.ammo[p.weapon] + ' peluru';
-    if (p.inCar && p.car) {
-      el.speedBox.style.display = 'block';
-      el.speed.textContent = Math.round(Math.abs(p.car.speed) * 3.6) + ' km/h';
-    } else el.speedBox.style.display = 'none';
-    el.dispatch.textContent = dispatchLine(pol);
-    const step = game.currentStepLabel ? game.currentStepLabel() : null;
-    if (game.missions.active) {
-      el.objectiveTitle.textContent = `MISI ${game.missions.active.def.num} — ${game.missions.active.def.title}`;
-      el.objective.textContent = step || '';
-      el.objective.parentElement.style.display = 'block';
-    } else if (game.missions.available <= 10) {
-      el.objectiveTitle.textContent = 'Bebas — Isla Caldera milikmu';
-      el.objective.textContent = `Tekan M untuk misi ${game.missions.available}: ${MISSION_DEFS[game.missions.available - 1].title}`;
-      el.objective.parentElement.style.display = 'block';
-    } else {
-      el.objectiveTitle.textContent = 'CALDERA VIVA — tamat';
-      el.objective.textContent = 'Semua 10 misi selesai. Jelajahi, balapan, atau mulai lagi.';
-      el.objective.parentElement.style.display = 'block';
-    }
-    el.race.textContent = game.race.active
-      ? `🏁 BALAPAN — checkpoint ${game.race.cp}/${game.race.total} • ${game.race.time.toFixed(1)} dtk`
-      : (game.race.available ? '🏁 Balapan jalanan: tekan B di garis start Plaza Brasa' : '');
-    drawMinimap();
-    if (toastTimer > 0) { toastTimer -= dt || 0.016; if (toastTimer <= 0) el.toast.classList.remove('show'); }
+  if (toastTimer > 0) {
+    toastTimer -= dt;
+    if (toastTimer <= 0) el.toast.style.opacity = '0';
   }
+  drawMinimap(state);
+}
 
-  function toast(title, body) {
-    el.toastTitle.textContent = title;
-    el.toastBody.textContent = body;
-    el.toast.classList.add('show');
-    toastTimer = 4;
+export function drawMinimap(state) {
+  const cv = el.minimap;
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const w = cv.width;
+  const h = cv.height;
+  const scale = w / 640;
+  const X = (x) => w / 2 + x * scale;
+  const Z = (z) => h / 2 + z * scale;
+  ctx.fillStyle = '#0e2f4a';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#5d4a33';
+  ctx.fillRect(X(-260), Z(-260), 520 * scale, 520 * scale);
+  ctx.strokeStyle = '#1b1b1e';
+  ctx.lineWidth = 3;
+  for (const lx of [-240, -180, -120, -60, 0, 60, 120, 180, 240]) {
+    ctx.beginPath(); ctx.moveTo(X(lx), Z(-260)); ctx.lineTo(X(lx), Z(260)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(X(-260), Z(lx)); ctx.lineTo(X(260), Z(lx)); ctx.stroke();
   }
-
-  function toggleWheel() {
-    const open = el.wheel.classList.toggle('show');
-    if (open) {
-      el.wheel.innerHTML = WEAPONS.map((w, i) =>
-        `<div class="wheel-slot ${i === game.player.weapon ? 'sel' : ''}" data-i="${i}">
-          <b>${w.key}</b> ${w.name}<br><small>${game.player.ammo[i] === Infinity ? '∞' : game.player.ammo[i]}</small>
-        </div>`).join('');
-      el.wheel.querySelectorAll('.wheel-slot').forEach((s) => {
-        s.addEventListener('click', () => { game.player.weapon = +s.dataset.i; el.wheel.classList.remove('show'); });
-      });
-    }
+  ctx.fillStyle = '#8a6a45';
+  ctx.beginPath(); ctx.arc(X(0), Z(0), 10, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#4a3630';
+  ctx.beginPath(); ctx.arc(X(0), Z(-205), 16, 0, Math.PI * 2); ctx.fill();
+  for (const m of state.markers) {
+    ctx.fillStyle = '#ffd23f';
+    ctx.beginPath(); ctx.arc(X(m.x), Z(m.z), 4, 0, Math.PI * 2); ctx.fill();
   }
-
-  function showGarage(open) {
-    el.garage.classList.toggle('show', open);
-    if (open) {
-      const p = game.player;
-      el.garageInfo.innerHTML = `Kendaraan: <b>${p.car ? p.car.name : '—'}</b> • HP ${p.car ? Math.round(p.car.hp) : '—'}/100<br>` +
-        `Mesin Lv.${game.upgrades.engine} • Armor Lv.${game.upgrades.armor} • Uang: ${fmtCash(game.cash)}`;
-    }
+  for (const car of state.cars) {
+    if (car.hidden) continue;
+    ctx.fillStyle = car.isCop ? '#4488ff' : car.isPlayer ? '#ff5533' : '#bbbbbb';
+    ctx.fillRect(X(car.x) - 2, Z(car.z) - 2, 4, 4);
   }
-
-  function showPause(open) {
-    el.pause.classList.toggle('show', open);
-    if (open) {
-      el.pauseStats.innerHTML =
-        `Uang: <b>${fmtCash(game.cash)}</b> • Respect: <b>${game.respect}</b> (${game.rankName()})<br>` +
-        `Misi selesai: <b>${game.missions.completed.length}/10</b> • Wanted: <b>${game.police.wanted}★</b><br>` +
-        `Waktu: ${fmtTime(game.hour)} • Distrik: ${districtAt(game.player.x, game.player.z).name} • Radio: ${game.audio.stationName}`;
-      el.missionList.innerHTML = MISSION_DEFS.map((m) =>
-        `<div class="mrow ${game.missions.completed.includes(m.num) ? 'done' : ''} ${game.missions.active && game.missions.active.def.num === m.num ? 'active' : ''}">
-          <b>${m.num}. ${m.title}</b> — ${game.missions.completed.includes(m.num) ? '✅ selesai' : m.num === game.missions.available ? '▶ tersedia' : '🔒 terkunci'}
-        </div>`).join('');
-      el.districtList.innerHTML = game.city.districts.map((d) =>
-        `<div class="mrow"><b style="color:${d.color}">${d.name}</b> — standing ${game.standing[d.id] || 0}/100</div>`).join('');
-    }
+  const heli = state.police.heli;
+  if (heli.active) {
+    ctx.strokeStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(X(heli.x), Z(heli.z), 5, 0, Math.PI * 2); ctx.stroke();
   }
+  const p = state.player;
+  const px = p.onFoot ? p.x : p.car.x;
+  const pz = p.onFoot ? p.z : p.car.z;
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(X(px), Z(pz), 4, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(X(px), Z(pz), 7, 0, Math.PI * 2); ctx.stroke();
+}
 
-  function showStart(open) { el.start.classList.toggle('show', open); }
+export function setWeaponWheel(state, open) {
+  if (!el.wheel) return;
+  el.wheel.style.display = open ? 'flex' : 'none';
+  if (open) {
+    const p = state.player;
+    el.wheel.innerHTML = ['pistol', 'smg', 'shotgun', 'molotov'].map((key, i) => {
+      const w = WEAPONS[key];
+      const ammo = p.weapons[key].ammo;
+      const sel = p.weapon === key ? ' class="sel"' : '';
+      return '<div' + sel + '><b>' + (i + 1) + '</b> ' + w.name + ' <span>' + (ammo === Infinity ? '∞' : ammo) + '</span></div>';
+    }).join('');
+  }
+}
 
-  return { update, toast, toggleWheel, showGarage, showPause, showStart, el };
+export function showStart(hasSave) {
+  el.start.style.display = 'flex';
+  el.btnContinue.style.display = hasSave ? 'inline-block' : 'none';
+  el.hud.style.display = 'none';
+}
+
+export function hideStart() {
+  el.start.style.display = 'none';
+  el.hud.style.display = 'block';
+}
+
+export function showPause(state) {
+  const p = state.player;
+  el.pauseStats.innerHTML =
+    '<b>' + fmtMoney(p.money) + '</b> · ' + respectRank(p.respect) + ' (' + p.respect + ' respect)<br>' +
+    'Kesehatan: ' + Math.ceil(p.health) + ' · Senjata: ' + WEAPONS[p.weapon].name + '<br>' +
+    'Mesin: Lv ' + p.upgrades.engine + ' · Armor: Lv ' + p.upgrades.armor + ' · Wanted: ' + state.police.wanted + '★';
+  el.pauseMissions.innerHTML = MISSIONS.map((d) =>
+    '<div>' + (state.missionsDone.includes(d.id) ? '✓' : '·') + ' M' + d.id + ' — ' + d.name + '</div>').join('');
+  el.pauseStanding.innerHTML = Object.entries(state.standing).map(([name, v]) =>
+    '<div>' + name + ' <div class="bar"><div style="width:' + v + '%"></div></div> ' + v + '</div>').join('');
+  el.pause.style.display = 'flex';
+}
+
+export function hidePause() {
+  el.pause.style.display = 'none';
+}
+
+export function showEnd(state, kind) {
+  const p = state.player;
+  if (kind === 'busted') {
+    el.endTitle.textContent = 'DITANGKAP GIC';
+    el.endText.textContent = 'Central GIC menahanmu. Denda $150, mobil disita. Tito menjemputmu di garasi.';
+  } else if (kind === 'wasted') {
+    el.endTitle.textContent = 'KAMU TUMBANG';
+    el.endText.textContent = 'Isla Caldera tidak ampun. Mara membawamu ke garasi — separuh uangmu hilang.';
+  } else {
+    el.endTitle.textContent = 'CALDERA TERBAKAR — RAJA CALDERA';
+    el.endText.textContent = 'Sepuluh misi selesai. Pulau ini milikmu sekarang: $' + Math.floor(p.money) +
+      ', ' + p.respect + ' respect. Main bebas, atau mulai lagi dari awal.';
+  }
+  el.end.style.display = 'flex';
+}
+
+export function hideEnd() {
+  el.end.style.display = 'none';
 }

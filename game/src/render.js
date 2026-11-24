@@ -1,353 +1,513 @@
-// render.js — WebGL low-poly renderer for CALDERA VIVA, plus a 2D top-down
-// fallback used when WebGL is unavailable (?mode=2d or context failure).
-// One shader, vertex colours, flat lambert light, distance fog, animated sea.
+// render.js — hand-written WebGL low-poly renderer for CALDERA VIVA, plus a
+// top-down 2D fallback when WebGL is unavailable (or ?mode=2d).
+// One shader, vertex colours, lambert sun, distance fog, an animated sea.
+// No libraries: the whole pipeline is built from the city's own geometry.
 
-import {
-  mat4Identity, mat4Multiply, mat4Perspective, mat4LookAt,
-  mat4Translate, mat4Scale, mat4RotateY, clamp, lerp,
-} from './utils.js';
-import { BEACH_Z, WATER_Z, WORLD_BOUND } from './city.js';
+import { mat4Perspective, mat4LookAt, mat4Multiply, clamp, lerp } from './utils.js';
 
 const VERT = `
-attribute vec3 aPos; attribute vec3 aNorm; attribute vec3 aCol;
-uniform mat4 uProj; uniform mat4 uView; uniform mat4 uModel;
-uniform vec3 uTint; uniform float uTime; uniform float uWater; uniform vec3 uCam;
-varying vec3 vCol; varying vec3 vNorm; varying float vDist;
-void main(){
+attribute vec3 aPos;
+attribute vec3 aColor;
+attribute vec3 aNormal;
+attribute float aWave;
+uniform mat4 uMVP;
+uniform float uTime;
+uniform vec3 uCamPos;
+varying vec3 vColor;
+varying vec3 vNormal;
+varying float vDist;
+void main() {
   vec3 p = aPos;
-  if (uWater > 0.5) p.y += sin(p.x * 0.08 + uTime * 1.4) * 0.5 + cos(p.z * 0.06 + uTime) * 0.4;
-  vec4 w = uModel * vec4(p, 1.0);
-  vCol = aCol * uTint;
-  vNorm = mat3(uModel) * aNorm;
-  vDist = distance(w.xyz, uCam);
-  gl_Position = uProj * uView * w;
+  if (aWave > 0.0) {
+    p.y += (sin(p.x * 0.08 + uTime * 1.3) + cos(p.z * 0.06 + uTime * 0.9)) * 0.55 * aWave;
+  }
+  vColor = aColor;
+  vNormal = aNormal;
+  vDist = distance(uCamPos, p);
+  gl_Position = uMVP * vec4(p, 1.0);
 }`;
+
 const FRAG = `
 precision mediump float;
-varying vec3 vCol; varying vec3 vNorm; varying float vDist;
-uniform vec3 uSun; uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
-uniform vec3 uCam;
-void main(){
-  float d = max(dot(normalize(vNorm), normalize(uSun)), 0.0);
-  vec3 col = vCol * (0.52 + 0.48 * d);
-  float f = smoothstep(uFogNear, uFogFar, vDist);
-  gl_FragColor = vec4(mix(col, uFog, f), 1.0);
+varying vec3 vColor;
+varying vec3 vNormal;
+varying float vDist;
+uniform vec3 uSunDir;
+uniform vec3 uFogColor;
+uniform float uFogNear;
+uniform float uFogFar;
+uniform float uAmbient;
+void main() {
+  float diff = max(dot(normalize(vNormal), normalize(uSunDir)), 0.0);
+  vec3 col = vColor * (uAmbient + (1.0 - uAmbient) * diff);
+  float f = clamp((vDist - uFogNear) / (uFogFar - uFogNear), 0.0, 1.0);
+  gl_FragColor = vec4(mix(col, uFogColor, f), 1.0);
 }`;
 
-// Sky palettes by time of day (hour 0-24): [sky, fog, sunDir, sunStrength]
-export function skyFor(hour) {
-  if (hour >= 6 && hour < 10) return { sky: [0.98, 0.72, 0.45], fog: [0.98, 0.72, 0.48], sun: [0.6, 0.5, 0.4] };
-  if (hour >= 10 && hour < 16) return { sky: [0.45, 0.75, 0.92], fog: [0.62, 0.78, 0.88], sun: [0.4, 0.9, 0.3] };
-  if (hour >= 16 && hour < 19) return { sky: [0.99, 0.55, 0.32], fog: [0.96, 0.55, 0.38], sun: [-0.7, 0.35, 0.5] };
-  if (hour >= 19 && hour < 21) return { sky: [0.45, 0.28, 0.55], fog: [0.55, 0.32, 0.55], sun: [-0.8, 0.15, 0.3] };
-  return { sky: [0.08, 0.10, 0.22], fog: [0.10, 0.12, 0.25], sun: [0.2, 0.6, -0.4] };
+// Sky / fog / sun keyframes by hour of day.
+const DAY_KEYS = [
+  { h: 5, sky: [0.35, 0.3, 0.5], fog: [0.5, 0.42, 0.55], ambient: 0.38, sun: 0.5 },
+  { h: 6.5, sky: [1.0, 0.7, 0.42], fog: [0.98, 0.68, 0.48], ambient: 0.42, sun: 0.9 },
+  { h: 12, sky: [0.5, 0.78, 0.95], fog: [0.68, 0.83, 0.95], ambient: 0.55, sun: 1.0 },
+  { h: 17.5, sky: [1.0, 0.62, 0.32], fog: [0.96, 0.58, 0.34], ambient: 0.42, sun: 0.9 },
+  { h: 18.5, sky: [0.85, 0.42, 0.32], fog: [0.85, 0.45, 0.35], ambient: 0.38, sun: 0.7 },
+  { h: 21, sky: [0.08, 0.11, 0.24], fog: [0.12, 0.15, 0.3], ambient: 0.38, sun: 0.25 },
+  { h: 24, sky: [0.06, 0.09, 0.2], fog: [0.1, 0.13, 0.26], ambient: 0.36, sun: 0.25 },
+];
+
+export function lightForHour(hour) {
+  const h = ((hour % 24) + 24) % 24;
+  let a = DAY_KEYS[0];
+  let b = DAY_KEYS[DAY_KEYS.length - 1];
+  for (let i = 0; i < DAY_KEYS.length - 1; i++) {
+    if (h >= DAY_KEYS[i].h && h <= DAY_KEYS[i + 1].h) { a = DAY_KEYS[i]; b = DAY_KEYS[i + 1]; break; }
+  }
+  const t = b.h === a.h ? 0 : clamp((h - a.h) / (b.h - a.h), 0, 1);
+  const mix3 = (x, y) => [lerp(x[0], y[0], t), lerp(x[1], y[1], t), lerp(x[2], y[2], t)];
+  const el = Math.sin(((h - 6) / 12) * Math.PI) * 0.85 + 0.12; // sun elevation
+  const az = ((h - 6) / 12) * Math.PI;
+  const sunDir = h >= 6 && h <= 19
+    ? [Math.cos(az) * 0.8, Math.max(0.08, el), Math.sin(az) * 0.6]
+    : [0.3, 0.85, 0.4];
+  return { sky: mix3(a.sky, b.sky), fog: mix3(a.fog, b.fog), ambient: lerp(a.ambient, b.ambient, t), sun: lerp(a.sun, b.sun, t), sunDir };
 }
 
-class MeshBuilder {
-  constructor() { this.pos = []; this.nor = []; this.col = []; }
-  quad(a, b, c, d, n, col) {
-    // two triangles a-b-c, a-c-d with one normal and colour
-    const vs = [a, b, c, a, c, d];
-    for (const v of vs) { this.pos.push(v[0], v[1], v[2]); this.nor.push(n[0], n[1], n[2]); this.col.push(col[0], col[1], col[2]); }
-  }
-  box(cx, cy, cz, sx, sy, sz, col, topCol) {
-    const x0 = cx - sx / 2, x1 = cx + sx / 2, y0 = cy - sy / 2, y1 = cy + sy / 2, z0 = cz - sz / 2, z1 = cz + sz / 2;
-    const top = topCol || col;
-    this.quad([x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0], [0, 1, 0], top);
-    this.quad([x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [0, -1, 0], [col[0] * 0.5, col[1] * 0.5, col[2] * 0.5]);
-    this.quad([x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1], col);
-    this.quad([x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [0, 0, -1], col);
-    this.quad([x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [1, 0, 0], col);
-    this.quad([x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [-1, 0, 0], col);
-  }
-  cone(cx, cz, baseY, h, r, col, seg) {
-    for (let i = 0; i < seg; i++) {
-      const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
-      const p0 = [cx + Math.cos(a0) * r, baseY, cz + Math.sin(a0) * r];
-      const p1 = [cx + Math.cos(a1) * r, baseY, cz + Math.sin(a1) * r];
-      const top = [cx, baseY + h, cz];
-      const n = [Math.cos((a0 + a1) / 2) * 0.7, 0.7, Math.sin((a0 + a1) / 2) * 0.7];
-      this.pos.push(...p0, ...p1, ...top);
-      for (let k = 0; k < 3; k++) { this.nor.push(n[0], n[1], n[2]); this.col.push(col[0], col[1], col[2]); }
-    }
-  }
-  toArrays() {
-    return {
-      pos: new Float32Array(this.pos), nor: new Float32Array(this.nor),
-      col: new Float32Array(this.col), count: this.pos.length / 3,
-    };
+// ---------------------------------------------------------------- geometry helpers
+
+function pushTri(arr, p, c, n, w) {
+  for (let i = 0; i < 3; i++) {
+    arr.pos.push(p[i][0], p[i][1], p[i][2]);
+    arr.col.push(c[0], c[1], c[2]);
+    arr.nor.push(n[0], n[1], n[2]);
+    arr.wav.push(w);
   }
 }
 
-function buildWorldMesh(city) {
-  const b = new MeshBuilder();
-  // Ground base: dry grass / dirt.
-  b.box(0, -0.6, -40, WORLD_BOUND * 2 + 120, 1, WORLD_BOUND * 2 + 120, [0.55, 0.48, 0.32]);
-  // Black-sand beach strip.
-  b.box(0, -0.35, (BEACH_Z + WATER_Z) / 2 + 4, WORLD_BOUND * 2 + 120, 0.6, WATER_Z - BEACH_Z + 12, [0.16, 0.14, 0.15]);
-  // Roads: dark asphalt strips with pale sidewalks.
-  for (const rx of city.roadsX) b.box(rx, -0.15, 0, 12, 0.5, WORLD_BOUND * 2, [0.22, 0.22, 0.25]);
-  for (const rz of city.roadsZ) b.box(0, -0.15, rz, WORLD_BOUND * 2, 0.5, 12, [0.22, 0.22, 0.25]);
-  for (const rx of city.roadsX) {
-    b.box(rx - 8, -0.1, 0, 4, 0.4, WORLD_BOUND * 2, [0.62, 0.58, 0.52]);
-    b.box(rx + 8, -0.1, 0, 4, 0.4, WORLD_BOUND * 2, [0.62, 0.58, 0.52]);
-  }
-  // Centre dashes.
-  for (const rx of city.roadsX) for (let z = -200; z <= 200; z += 16) b.box(rx, 0.12, z, 0.6, 0.08, 6, [0.95, 0.85, 0.4]);
-  for (const rz of city.roadsZ) for (let x = -200; x <= 200; x += 16) b.box(x, 0.12, rz, 6, 0.08, 0.6, [0.95, 0.85, 0.4]);
-  // Plazas.
-  for (const p of city.plazas) b.box(p.x, -0.1, p.z, p.w, 0.4, p.d, [0.75, 0.68, 0.55]);
-  // Buildings with glass band near the top.
-  for (const bd of city.buildings) {
-    b.box(bd.x, bd.h / 2, bd.z, bd.w, bd.h, bd.d, bd.color, bd.roof);
-    b.box(bd.x, bd.h * 0.72, bd.z, bd.w + 0.15, bd.h * 0.18, bd.d + 0.15, [0.35, 0.55, 0.65]);
-  }
-  // Palms: trunk + frond crown.
-  for (const t of city.trees) {
-    b.box(t.x, 1.6 * t.s, t.z, 0.35 * t.s, 3.2 * t.s, 0.35 * t.s, [0.45, 0.32, 0.20]);
-    b.box(t.x, 3.4 * t.s, t.z, 3.4 * t.s, 0.5 * t.s, 3.4 * t.s, [0.15, 0.55, 0.25]);
-  }
-  // Lamps: pole + head.
-  for (const l of city.lamps) {
-    b.box(l.x, 2.6, l.z, 0.18, 5.2, 0.18, [0.25, 0.25, 0.28]);
-    b.box(l.x, 5.3, l.z, 0.7, 0.3, 0.7, [1.0, 0.9, 0.6]);
-  }
-  // Pier deck + posts.
-  b.box(30, 0.4, 222, 26, 0.8, 34, [0.55, 0.42, 0.28]);
-  for (let z = 210; z <= 238; z += 7) { b.box(19, -0.5, z, 1, 2, 1, [0.4, 0.3, 0.2]); b.box(41, -0.5, z, 1, 2, 1, [0.4, 0.3, 0.2]); }
-  // Volcano cone far north + glowing crater rim.
-  b.cone(0, -330, 0, 130, 150, [0.32, 0.24, 0.22], 12);
-  b.cone(0, -330, 118, 14, 22, [0.95, 0.35, 0.10], 12);
-  // Boardwalk neon strip.
-  b.box(0, 0.25, 176, 260, 0.5, 3, [0.95, 0.35, 0.55]);
-  // Garage block + impound fence + mansion wall (visible anchors).
-  b.box(-52, 3, 97, 18, 6, 12, [0.85, 0.55, 0.25], [0.35, 0.30, 0.28]);
-  b.box(120, 2, -140, 24, 4, 16, [0.45, 0.45, 0.50], [0.30, 0.30, 0.34]);
-  b.box(-150, 4, -150, 26, 8, 18, [0.92, 0.88, 0.78], [0.55, 0.25, 0.18]);
-  return b.toArrays();
+function pushQuad(arr, a, b, c, d, color, normal, wave = 0) {
+  pushTri(arr, [a, b, c], color, normal, wave);
+  pushTri(arr, [a, c, d], color, normal, wave);
 }
 
-function buildWaterMesh() {
-  const b = new MeshBuilder();
-  b.box(0, -0.8, 320, WORLD_BOUND * 2 + 400, 0.6, 260, [0.10, 0.35, 0.55]);
-  return b.toArrays();
+function brighten(color, f) {
+  return [clamp(color[0] * f, 0, 1), clamp(color[1] * f, 0, 1), clamp(color[2] * f, 0, 1)];
 }
 
-function buildUnitBox() {
-  const b = new MeshBuilder();
-  b.box(0, 0, 0, 1, 1, 1, [1, 1, 1]);
-  return b.toArrays();
+/** Axis-aligned box, centre (cx, cy, cz), size (w, h, d). */
+function pushBox(arr, cx, cy, cz, w, h, d, color, topColor = null) {
+  const x0 = cx - w / 2, x1 = cx + w / 2;
+  const y0 = cy - h / 2, y1 = cy + h / 2;
+  const z0 = cz - d / 2, z1 = cz + d / 2;
+  const top = topColor || brighten(color, 1.25);
+  const dark = brighten(color, 0.72);
+  // top / bottom
+  pushQuad(arr, [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], top, [0, 1, 0]);
+  pushQuad(arr, [x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0], dark, [0, -1, 0]);
+  // sides
+  pushQuad(arr, [x0, y0, z1], [x0, y1, z1], [x1, y1, z1], [x1, y0, z1], color, [0, 0, 1]);
+  pushQuad(arr, [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z0], color, [0, 0, -1]);
+  pushQuad(arr, [x1, y0, z1], [x1, y1, z1], [x1, y1, z0], [x1, y0, z0], brighten(color, 0.9), [1, 0, 0]);
+  pushQuad(arr, [x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1], brighten(color, 0.9), [-1, 0, 0]);
 }
 
-export function createRenderer(canvas, city) {
-  const params = new URLSearchParams(location.search);
-  let gl = null;
-  if (params.get('mode') !== '2d') {
-    try { gl = canvas.getContext('webgl', { antialias: true }) || canvas.getContext('experimental-webgl'); } catch (e) { gl = null; }
-  }
-  const ctx2d = canvas.getContext('2d');
-  const state = { mode: gl ? '3d' : '2d', time: 0, camMode: 'chase', orbitYaw: 0, orbitPitch: 0 };
+/** Box rotated around Y by `heading` (0 faces -z). */
+function pushBoxRot(arr, cx, cy, cz, w, h, d, heading, color, topColor = null) {
+  const c = Math.cos(heading);
+  const s = Math.sin(heading);
+  const rot = (x, z) => [cx + x * c + z * s, cz - x * s + z * c];
+  const hw = w / 2, hh = h / 2, hd = d / 2;
+  const top = topColor || brighten(color, 1.25);
+  const dark = brighten(color, 0.72);
+  const P = (x, y, z) => { const [rx, rz] = rot(x, z); return [rx, cy + y, rz]; };
+  const N = (x, z) => { const [rx, rz] = rot(x, z); return [rx, 0, rz]; };
+  const nTop = [0, 1, 0], nBot = [0, -1, 0];
+  const nF = N(0, 1), nB = N(0, -1), nR = N(1, 0), nL = N(-1, 0);
+  pushQuad(arr, P(-hw, hh, -hd), P(hw, hh, -hd), P(hw, hh, hd), P(-hw, hh, hd), top, nTop);
+  pushQuad(arr, P(-hw, -hh, hd), P(hw, -hh, hd), P(hw, -hh, -hd), P(-hw, -hh, -hd), dark, nBot);
+  pushQuad(arr, P(-hw, -hh, hd), P(-hw, hh, hd), P(hw, hh, hd), P(hw, -hh, hd), color, nF);
+  pushQuad(arr, P(hw, -hh, -hd), P(hw, hh, -hd), P(-hw, hh, -hd), P(-hw, -hh, -hd), color, nB);
+  pushQuad(arr, P(hw, -hh, hd), P(hw, hh, hd), P(hw, hh, -hd), P(hw, -hh, -hd), brighten(color, 0.9), nR);
+  pushQuad(arr, P(-hw, -hh, -hd), P(-hw, hh, -hd), P(-hw, hh, hd), P(-hw, -hh, hd), brighten(color, 0.9), nL);
+}
 
-  let prog = null, bufWorld = null, bufWater = null, bufUnit = null, uni = {};
-  if (gl) {
-    const compile = (type, src) => {
-      const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
-      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error('shader: ' + gl.getShaderInfoLog(s));
-      return s;
-    };
-    prog = gl.createProgram();
-    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
-    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
-    gl.linkProgram(prog);
-    gl.useProgram(prog);
-    uni = {
-      proj: gl.getUniformLocation(prog, 'uProj'), view: gl.getUniformLocation(prog, 'uView'),
-      model: gl.getUniformLocation(prog, 'uModel'), tint: gl.getUniformLocation(prog, 'uTint'),
-      time: gl.getUniformLocation(prog, 'uTime'), water: gl.getUniformLocation(prog, 'uWater'),
-      sun: gl.getUniformLocation(prog, 'uSun'), fog: gl.getUniformLocation(prog, 'uFog'),
-      fogNear: gl.getUniformLocation(prog, 'uFogNear'), fogFar: gl.getUniformLocation(prog, 'uFogFar'),
-      cam: gl.getUniformLocation(prog, 'uCam'),
-    };
-    const mkBuf = (arr) => {
-      const mk = (data, loc, size) => {
-        const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-        gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-        gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
-        return buf;
-      };
-      const posLoc = gl.getAttribLocation(prog, 'aPos'), norLoc = gl.getAttribLocation(prog, 'aNorm'), colLoc = gl.getAttribLocation(prog, 'aCol');
-      return {
-        pos: mk(arr.pos, posLoc, 3), nor: mk(arr.nor, norLoc, 3), col: mk(arr.col, colLoc, 3),
-        count: arr.count,
-      };
-    };
-    bufWorld = mkBuf(buildWorldMesh(city));
-    bufWater = mkBuf(buildWaterMesh());
-    bufUnit = mkBuf(buildUnitBox());
-    gl.enable(gl.DEPTH_TEST);
-  }
+function newGeom() {
+  return { pos: [], col: [], nor: [], wav: [] };
+}
 
-  function bindBuf(b) {
-    gl.bindBuffer(gl.ARRAY_BUFFER, b.pos); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, b.nor); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ARRAY_BUFFER, b.col); gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
-  }
-
-  function drawBoxAt(x, y, z, sx, sy, sz, yaw, tint, pitch = 0) {
-    let m = mat4Multiply(mat4Translate(x, y, z), mat4RotateY(yaw));
-    m = mat4Multiply(m, mat4Scale(sx, sy, sz));
-    gl.uniformMatrix4fv(uni.model, false, m);
-    gl.uniform3fv(uni.tint, tint);
-    gl.drawArrays(gl.TRIANGLES, 0, bufUnit.count);
-  }
-
-  function drawCar(car, isPolice) {
-    const body = car.color || [0.8, 0.2, 0.2];
-    const fx = Math.sin(car.angle), fz = Math.cos(car.angle);
-    const px = -fz, pz = fx; // side axis
-    drawBoxAt(car.x, 0.55, car.z, 2.0, 0.7, 4.4, car.angle, body);
-    drawBoxAt(car.x - fx * 0.3, 1.15, car.z - fz * 0.3, 1.7, 0.55, 2.2, car.angle, [0.12, 0.16, 0.20]);
-    const wheel = [0.08, 0.08, 0.09];
-    for (const [sx, sz] of [[-0.95, 1.4], [0.95, 1.4], [-0.95, -1.4], [0.95, -1.4]]) {
-      drawBoxAt(car.x + px * sx + fx * sz, 0.35, car.z + pz * sx + fz * sz, 0.3, 0.7, 0.7, car.angle, wheel);
-    }
-    if (isPolice) {
-      drawBoxAt(car.x, 0.95, car.z, 1.9, 0.12, 0.6, car.angle, [1, 1, 1]);
-      drawBoxAt(car.x - fx * 0.2, 1.55, car.z - fz * 0.2, 0.5, 0.18, 0.4, car.angle, car.lightOn ? [1, 0.1, 0.1] : [0.1, 0.1, 0.6]);
-      drawBoxAt(car.x + fx * 0.2, 1.55, car.z + fz * 0.2, 0.5, 0.18, 0.4, car.angle, car.lightOn ? [0.1, 0.1, 1] : [0.6, 0.1, 0.1]);
-    }
-    // Fake blob shadow.
-    drawBoxAt(car.x, 0.06, car.z, 2.2, 0.05, 4.6, car.angle, [0.05, 0.05, 0.06]);
-  }
-
-  function drawPed(p) {
-    const bob = p.moving ? Math.sin(state.time * 10 + p.phase) * 0.08 : 0;
-    drawBoxAt(p.x, 0.85 + bob, p.z, 0.7, 1.5, 0.45, p.angle, p.shirt);
-    drawBoxAt(p.x, 1.75 + bob, p.z, 0.45, 0.45, 0.45, p.angle, p.skin);
-    drawBoxAt(p.x, 0.06, p.z, 0.9, 0.05, 0.7, p.angle, [0.05, 0.05, 0.06]);
-  }
-
-  function drawHeli(h) {
-    drawBoxAt(h.x, h.y, h.z, 3.2, 1.4, 6.0, h.angle, [0.15, 0.35, 0.45]);
-    drawBoxAt(h.x - Math.sin(h.angle) * 4, h.y + 0.3, h.z - Math.cos(h.angle) * 4, 0.8, 0.8, 4.5, h.angle, [0.12, 0.30, 0.40]);
-    const rotor = state.time * 18;
-    drawBoxAt(h.x, h.y + 0.9, h.z, 9, 0.08, 0.5, rotor, [0.2, 0.2, 0.2]);
-    // Searchlight cone (a translucent-looking pale box aimed down).
-    drawBoxAt(h.x, h.y - 6, h.z, 3.5, 12, 3.5, h.angle, [1.0, 0.95, 0.6]);
-  }
-
-  function render3D(view) {
-    const w = canvas.width, h = canvas.height;
-    gl.viewport(0, 0, w, h);
-    const sky = skyFor(view.hour);
-    gl.clearColor(sky.sky[0], sky.sky[1], sky.sky[2], 1);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    const proj = mat4Perspective(1.05, w / h, 0.5, 900);
-    const eye = view.camEye, tgt = view.camTarget;
-    const viewM = mat4LookAt(eye, tgt, [0, 1, 0]);
-    gl.useProgram(prog);
-    gl.uniformMatrix4fv(uni.proj, false, proj);
-    gl.uniformMatrix4fv(uni.view, false, viewM);
-    gl.uniform1f(uni.time, state.time);
-    gl.uniform3fv(uni.sun, sky.sun);
-    gl.uniform3fv(uni.fog, sky.fog);
-    gl.uniform3fv(uni.cam, eye);
-    gl.uniform1f(uni.fogNear, 90); gl.uniform1f(uni.fogFar, 420);
-    // Static world.
-    bindBuf(bufWorld);
-    gl.uniformMatrix4fv(uni.model, false, mat4Identity());
-    gl.uniform3fv(uni.tint, [1, 1, 1]);
-    gl.uniform1f(uni.water, 0);
-    gl.drawArrays(gl.TRIANGLES, 0, bufWorld.count);
-    // Sea.
-    bindBuf(bufWater);
-    gl.uniform1f(uni.water, 1);
-    gl.drawArrays(gl.TRIANGLES, 0, bufWater.count);
-    gl.uniform1f(uni.water, 0);
-    // Dynamics share the unit box.
-    bindBuf(bufUnit);
-    for (const c of view.parked) drawCar(c, false);
-    for (const c of view.missionCars || []) drawCar(c, false);
-    for (const c of view.traffic) drawCar(c, false);
-    for (const c of view.policeCars) drawCar(c, true);
-    if (view.playerCar) drawCar(view.playerCar, false);
-    if (view.roadblock) for (const c of view.roadblock) drawCar(c, true);
-    for (const p of view.peds) drawPed(p);
-    if (view.playerOnFoot) drawPed(view.playerOnFoot);
-    if (view.heli) drawHeli(view.heli);
-    if (view.marker) {
-      const pulse = 1 + Math.sin(state.time * 4) * 0.15;
-      drawBoxAt(view.marker.x, 3.2, view.marker.z, 1.2 * pulse, 6.4, 1.2 * pulse, state.time, [1.0, 0.85, 0.1]);
-      drawBoxAt(view.marker.x, 0.15, view.marker.z, 5, 0.2, 5, 0, [1.0, 0.85, 0.1]);
-    }
-    for (const pt of view.particles || []) {
-      drawBoxAt(pt.x, pt.y, pt.z, pt.s, pt.s, pt.s, 0, pt.color);
-    }
-  }
-
-  function render2D(view) {
-    const w = canvas.width, h = canvas.height;
-    ctx2d.fillStyle = '#1a2b3c'; ctx2d.fillRect(0, 0, w, h);
-    const s = Math.min(w, h) / 480; // world units per px scale
-    const cx = view.focus.x, cz = view.focus.z;
-    const X = (x) => w / 2 + (x - cx) * s, Z = (z) => h / 2 + (z - cz) * s;
-    ctx2d.fillStyle = '#8a7a5a'; ctx2d.fillRect(0, 0, w, h);
-    ctx2d.fillStyle = '#202024';
-    for (const rx of city.roadsX) ctx2d.fillRect(X(rx - 6), 0, 12 * s, h);
-    for (const rz of city.roadsZ) ctx2d.fillRect(0, Z(rz - 6), w, 12 * s);
-    ctx2d.fillStyle = '#c9b183';
-    for (const b of city.buildings) ctx2d.fillRect(X(b.x - b.w / 2), Z(b.z - b.d / 2), b.w * s, b.d * s);
-    ctx2d.fillStyle = '#141210'; ctx2d.fillRect(0, Z(BEACH_Z), w, h - Z(BEACH_Z));
-    ctx2d.fillStyle = '#0e4d7a'; ctx2d.fillRect(0, Z(WATER_Z), w, h - Z(WATER_Z));
-    const dot = (x, z, r, col) => { ctx2d.fillStyle = col; ctx2d.beginPath(); ctx2d.arc(X(x), Z(z), r, 0, 7); ctx2d.fill(); };
-    for (const c of view.traffic) dot(c.x, c.z, 4, '#ddd');
-    for (const c of view.policeCars) dot(c.x, c.z, 5, '#2266ff');
-    for (const p of view.peds) dot(p.x, p.z, 2.5, '#f5d0a0');
-    if (view.playerCar) dot(view.playerCar.x, view.playerCar.z, 6, '#ffcc00');
-    if (view.playerOnFoot) dot(view.playerOnFoot.x, view.playerOnFoot.z, 5, '#ffcc00');
-    if (view.marker) { ctx2d.strokeStyle = '#ffcc00'; ctx2d.lineWidth = 3; ctx2d.beginPath(); ctx2d.arc(X(view.marker.x), Z(view.marker.z), 10 + Math.sin(state.time * 4) * 3, 0, 7); ctx2d.stroke(); }
-    if (view.heli) dot(view.heli.x, view.heli.z, 7, '#66ccff');
-    ctx2d.fillStyle = '#fff'; ctx2d.font = 'bold 16px sans-serif';
-    ctx2d.fillText('CALDERA VIVA — mode top-down 2D (fallback WebGL)', 14, 104);
-  }
-
+function toArrays(g) {
   return {
-    get mode() { return state.mode; },
-    get camMode() { return state.camMode; },
-    setCamMode(m) { state.camMode = m; },
-    resize(w, h) { canvas.width = w; canvas.height = h; },
-    render(view, dt) {
-      state.time += dt;
-      if (state.mode === '3d') render3D(view); else render2D(view);
-    },
+    pos: new Float32Array(g.pos),
+    col: new Float32Array(g.col),
+    nor: new Float32Array(g.nor),
+    wav: new Float32Array(g.wav),
+    count: g.pos.length / 3,
   };
 }
 
-// Compute the chase / iso camera for the current focus (player pos + heading).
-export function computeCamera(focus, heading, camMode, orbitYaw, dt, prev) {
-  let eye, target = [focus.x, 1.6, focus.z];
-  if (camMode === 'iso') {
-    eye = [focus.x + 42, 46, focus.z + 42];
-  } else if (camMode === 'high') {
-    eye = [focus.x - Math.sin(heading) * 16, 26, focus.z - Math.cos(heading) * 16];
-    target = [focus.x + Math.sin(heading) * 14, 0, focus.z + Math.cos(heading) * 14];
-  } else {
-    const yaw = heading + Math.PI + orbitYaw;
-    const dist = 13, height = 6.2;
-    eye = [
-      focus.x + Math.sin(yaw) * dist,
-      height,
-      focus.z + Math.cos(yaw) * dist,
-    ];
-    target = [focus.x + Math.sin(heading) * 9, 1.8, focus.z + Math.cos(heading) * 9];
+// ---------------------------------------------------------------- static world
+
+function buildStaticGeometry(city) {
+  const g = newGeom();
+  // Sea (animated) and the black-sand shelf under the island.
+  pushQuad(g, [-900, -0.5, -900], [900, -0.5, -900], [900, -0.5, 900], [-900, -0.5, 900], [0.08, 0.32, 0.5], [0, 1, 0], 1);
+  pushQuad(g, [-320, -0.12, -320], [320, -0.12, -320], [320, -0.12, 320], [-320, -0.12, 320], [0.22, 0.2, 0.18], [0, 1, 0]);
+  // Land.
+  pushQuad(g, [-260, 0, -260], [260, 0, -260], [260, 0, 260], [-260, 0, 260], [0.6, 0.48, 0.34], [0, 1, 0]);
+  // Roads (asphalt strips) + plaza disc.
+  for (const lx of [-240, -180, -120, -60, 0, 60, 120, 180, 240]) {
+    pushQuad(g, [lx - 5, 0.06, -260], [lx + 5, 0.06, -260], [lx + 5, 0.06, 260], [lx - 5, 0.06, 260], [0.15, 0.15, 0.17], [0, 1, 0]);
+    pushQuad(g, [-260, 0.06, lx - 5], [260, 0.06, lx - 5], [260, 0.06, lx + 5], [-260, 0.06, lx + 5], [0.15, 0.15, 0.17], [0, 1, 0]);
   }
-  // First frame: snap straight to the computed pose instead of swooping in
-  // from a bogus origin (which also put the camera inside buildings).
-  if (!prev) return { eye: eye.slice(), target: target.slice() };
-  const out = prev;
-  const k = 1 - Math.pow(0.0001, dt); // frame-rate independent smoothing
-  out.eye[0] = lerp(out.eye[0], eye[0], k); out.eye[1] = lerp(out.eye[1], eye[1], k); out.eye[2] = lerp(out.eye[2], eye[2], k);
-  out.target[0] = lerp(out.target[0], target[0], k); out.target[1] = lerp(out.target[1], target[1], k); out.target[2] = lerp(out.target[2], target[2], k);
-  out.eye[1] = Math.max(out.eye[1], 2.2);
-  return out;
+  // Plaza Brasa: warm stone circle (fan of 16 triangles).
+  for (let i = 0; i < 16; i++) {
+    const a0 = (i / 16) * Math.PI * 2;
+    const a1 = ((i + 1) / 16) * Math.PI * 2;
+    pushTri(g, [[0, 0.09, 0], [Math.cos(a0) * 34, 0.09, Math.sin(a0) * 34], [Math.cos(a1) * 34, 0.09, Math.sin(a1) * 34]], [0.72, 0.6, 0.44], [0, 1, 0], 0);
+  }
+  // Harbour inlet water + bridge deck.
+  pushQuad(g, [238, -0.2, 18], [302, -0.2, 18], [302, -0.2, 102], [238, -0.2, 102], [0.1, 0.35, 0.5], [0, 1, 0], 1);
+  pushBox(g, 240, 0.35, 60, 17, 0.7, 84, [0.5, 0.48, 0.44]);
+  pushBox(g, 232.5, 1.1, 60, 0.6, 1.2, 84, [0.75, 0.3, 0.2]);
+  pushBox(g, 247.5, 1.1, 60, 0.6, 1.2, 84, [0.75, 0.3, 0.2]);
+  // Pier: wooden deck + posts.
+  for (let x = -264; x >= -330; x -= 6) {
+    pushBox(g, x, 0.4, 66, 6, 0.5, 50, [0.45, 0.32, 0.2]);
+  }
+  for (let x = -268; x >= -328; x -= 12) {
+    pushBox(g, x, -0.4, 42, 1.2, 2.4, 1.2, [0.35, 0.25, 0.16]);
+    pushBox(g, x, -0.4, 90, 1.2, 2.4, 1.2, [0.35, 0.25, 0.16]);
+  }
+  // Volcano cone + glowing crater.
+  const v = city.volcano;
+  for (let i = 0; i < 18; i++) {
+    const a0 = (i / 18) * Math.PI * 2;
+    const a1 = ((i + 1) / 18) * Math.PI * 2;
+    const p0 = [v.x + Math.cos(a0) * v.r, 0, v.z + Math.sin(a0) * v.r];
+    const p1 = [v.x + Math.cos(a1) * v.r, 0, v.z + Math.sin(a1) * v.r];
+    const apex = [v.x, v.h, v.z];
+    const n = [Math.cos((a0 + a1) / 2) * 0.7, 0.7, Math.sin((a0 + a1) / 2) * 0.7];
+    pushTri(g, [p0, apex, p1], [0.32, 0.24, 0.2], n, 0);
+  }
+  pushBox(g, v.x, v.h - 1, v.z, 16, 2, 16, [1.0, 0.32, 0.08]);
+  // Garage HQ (Tito's): low wide shed with a warm sign band.
+  pushBox(g, city.garage.x, 3, city.garage.z, 26, 6, 18, [0.55, 0.4, 0.28]);
+  pushBox(g, city.garage.x, 6.4, city.garage.z, 26, 0.8, 18, [1.0, 0.62, 0.15]);
+  // Buildings.
+  for (const b of city.buildings) {
+    pushBox(g, b.x, b.h / 2, b.z, b.w, b.h, b.d, b.color);
+    if (b.neon) {
+      pushBox(g, b.x, b.h + 0.4, b.z - b.hd + 0.3, b.w * 0.7, 0.7, 0.5, b.neon);
+    }
+  }
+  // Palms and lamps.
+  for (const p of city.palms) {
+    pushBox(g, p.x, p.h / 2, p.z, 0.7, p.h, 0.7, [0.5, 0.36, 0.22]);
+    pushBox(g, p.x, p.h + 0.6, p.z, 4.4, 0.5, 1.4, [0.16, 0.5, 0.22]);
+    pushBox(g, p.x, p.h + 0.6, p.z, 1.4, 0.5, 4.4, [0.2, 0.58, 0.26]);
+  }
+  for (const l of city.lamps) {
+    pushBox(g, l.x, 3, l.z, 0.4, 6, 0.4, [0.25, 0.25, 0.28]);
+    pushBox(g, l.x, 6.2, l.z, 1.1, 0.5, 1.1, [1.0, 0.9, 0.6]);
+  }
+  return toArrays(g);
+}
+
+// ---------------------------------------------------------------- renderer
+
+export class Renderer {
+  constructor(glCanvas, fallbackCanvas) {
+    this.glCanvas = glCanvas;
+    this.fallbackCanvas = fallbackCanvas;
+    this.mode = '3d';
+    this.gl = null;
+    this.camPos = { x: 0, y: 40, z: 60 };
+    this.camTarget = { x: 0, y: 0, z: 0 };
+    this.firstFrame = true;
+    this.staticCount = 0;
+  }
+
+  init() {
+    try {
+      this.gl = this.glCanvas.getContext('webgl', { antialias: true }) ||
+        this.glCanvas.getContext('experimental-webgl');
+    } catch (e) {
+      this.gl = null;
+    }
+    if (!this.gl) { this.mode = '2d'; return false; }
+    const gl = this.gl;
+    const compile = (type, src) => {
+      const sh = gl.createShader(type);
+      gl.shaderSource(sh, src);
+      gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        throw new Error('shader: ' + gl.getShaderInfoLog(sh));
+      }
+      return sh;
+    };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error('link: ' + gl.getProgramInfoLog(prog));
+    }
+    gl.useProgram(prog);
+    this.prog = prog;
+    this.loc = {
+      aPos: gl.getAttribLocation(prog, 'aPos'),
+      aColor: gl.getAttribLocation(prog, 'aColor'),
+      aNormal: gl.getAttribLocation(prog, 'aNormal'),
+      aWave: gl.getAttribLocation(prog, 'aWave'),
+      uMVP: gl.getUniformLocation(prog, 'uMVP'),
+      uTime: gl.getUniformLocation(prog, 'uTime'),
+      uCamPos: gl.getUniformLocation(prog, 'uCamPos'),
+      uSunDir: gl.getUniformLocation(prog, 'uSunDir'),
+      uFogColor: gl.getUniformLocation(prog, 'uFogColor'),
+      uFogNear: gl.getUniformLocation(prog, 'uFogNear'),
+      uFogFar: gl.getUniformLocation(prog, 'uFogFar'),
+      uAmbient: gl.getUniformLocation(prog, 'uAmbient'),
+    };
+    this.staticBuf = {};
+    this.dynBuf = {};
+    for (const key of ['pos', 'col', 'nor', 'wav']) {
+      this.staticBuf[key] = gl.createBuffer();
+      this.dynBuf[key] = gl.createBuffer();
+    }
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0.5, 0.7, 0.9, 1);
+    return true;
+  }
+
+  buildStatic(city) {
+    if (!this.gl) return;
+    const arrays = buildStaticGeometry(city);
+    this.staticCount = arrays.count;
+    const gl = this.gl;
+    const upload = (buf, data) => { gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); };
+    upload(this.staticBuf.pos, arrays.pos);
+    upload(this.staticBuf.col, arrays.col);
+    upload(this.staticBuf.nor, arrays.nor);
+    upload(this.staticBuf.wav, arrays.wav);
+  }  resize(w, h) {
+    this.glCanvas.width = w;
+    this.glCanvas.height = h;
+    this.fallbackCanvas.width = w;
+    this.fallbackCanvas.height = h;
+    if (this.gl) this.gl.viewport(0, 0, w, h);
+    this.w = w;
+    this.h = h;
+  }
+
+  /** Build the per-frame dynamic geometry: cars, peds, helicopter, markers, effects. */
+  buildDynamic(state, time) {
+    const g = newGeom();
+    const night = state.hour >= 19 || state.hour < 6;
+    for (const car of state.cars) {
+      if (car.hidden) continue;
+      const body = car.color;
+      pushBoxRot(g, car.x, 0.75, car.z, 2.2, 0.9, 4.4, car.heading, body);
+      pushBoxRot(g, car.x - Math.sin(car.heading) * 0.3, 1.45, car.z + Math.cos(car.heading) * 0.3, 1.8, 0.7, 2.2, car.heading, [0.12, 0.14, 0.18]);
+      // Wheels.
+      for (const [wx, wz] of [[-1.05, 1.4], [1.05, 1.4], [-1.05, -1.4], [1.05, -1.4]]) {
+        pushBoxRot(g, car.x, 0.35, car.z, 0.4, 0.7, 0.8, car.heading, [0.08, 0.08, 0.09]);
+      }
+      if (car.isCop) {
+        pushBoxRot(g, car.x, 1.35, car.z, 2.0, 0.25, 1.2, car.heading, [1.0, 0.15, 0.15]);
+        pushBoxRot(g, car.x, 1.35, car.z, 2.0, 0.25, 1.2, car.heading, [0.2, 0.3, 1.0]);
+      }
+      if (night || car.isPlayer) {
+        const fx = Math.sin(car.heading) * 2.3;
+        const fz = -Math.cos(car.heading) * 2.3;
+        pushBoxRot(g, car.x + fx - Math.cos(car.heading) * 0.7, 0.7, car.z + fz - Math.sin(car.heading) * 0.7, 0.4, 0.25, 0.2, car.heading, [1.0, 0.95, 0.7]);
+        pushBoxRot(g, car.x + fx + Math.cos(car.heading) * 0.7, 0.7, car.z + fz + Math.sin(car.heading) * 0.7, 0.4, 0.25, 0.2, car.heading, [1.0, 0.95, 0.7]);
+      }
+    }
+    for (const ped of state.peds) {
+      if (ped.state === 'down') {
+        pushBox(g, ped.x, 0.25, ped.z, 1.5, 0.5, 0.7, ped.color);
+      } else {
+        pushBox(g, ped.x, 0.65, ped.z, 0.6, 1.3, 0.45, ped.color);
+        pushBox(g, ped.x, 1.5, ped.z, 0.38, 0.38, 0.38, [0.85, 0.65, 0.5]);
+      }
+    }
+    // The player on foot: a yellow jacket so the character reads on screen.
+    if (state.player.onFoot) {
+      const pp = state.player;
+      pushBoxRot(g, pp.x, 0.65, pp.z, 0.6, 1.3, 0.45, pp.heading, [1.0, 0.85, 0.2]);
+      pushBox(g, pp.x, 1.5, pp.z, 0.38, 0.38, 0.38, [0.85, 0.65, 0.5]);
+    }
+    const heli = state.police.heli;
+    if (heli.active) {
+      const hx = heli.x, hz = heli.z, hy = 48;
+      pushBox(g, hx, hy, hz, 3.2, 1.7, 6.5, [0.85, 0.85, 0.8]);
+      pushBox(g, hx, hy + 0.2, hz + 4.5, 0.8, 0.8, 4.5, [0.8, 0.8, 0.78]);
+      const ra = time * 9;
+      pushBoxRot(g, hx, hy + 1.1, hz, 9, 0.15, 0.5, ra, [0.15, 0.15, 0.15]);
+      pushBoxRot(g, hx, hy + 1.1, hz, 0.5, 0.15, 9, ra, [0.15, 0.15, 0.15]);
+      // Spotlight pool on the ground under the helicopter.
+      pushQuad(g, [hx - 6, 0.12, hz - 6], [hx + 6, 0.12, hz - 6], [hx + 6, 0.12, hz + 6], [hx - 6, 0.12, hz + 6], [1.0, 0.95, 0.75], [0, 1, 0]);
+    }
+    for (const rb of state.police.roadblocks) {
+      for (const b of rb.blocks) {
+        pushBoxRot(g, b.x, 0.9, b.z, 2.2, 1.8, 1.2, rb.heading, [0.9, 0.85, 0.8]);
+        pushBoxRot(g, b.x, 1.9, b.z, 2.2, 0.3, 1.2, rb.heading, [1.0, 0.3, 0.15]);
+      }
+    }
+    for (const m of state.markers) {
+      const bounce = 3 + Math.sin(time * 3) * 0.8;
+      pushBox(g, m.x, 15, m.z, 0.9, 30, 0.9, m.color);
+      pushBoxRot(g, m.x, bounce, m.z, 2.2, 2.2, 2.2, time * 1.5, m.color);
+    }
+    if (state.muzzle && state.muzzle.ttl > 0) {
+      pushBox(g, state.muzzle.x, state.muzzle.y, state.muzzle.z, 0.9, 0.9, 0.9, [1.0, 0.9, 0.4]);
+    }
+    if (state.explosion && state.explosion.ttl > 0) {
+      const s = 2 + (0.6 - state.explosion.ttl) * 10;
+      pushBox(g, state.explosion.x, 1.5, state.explosion.z, s, s, s, [1.0, 0.45, 0.1]);
+    }
+    return toArrays(g);
+  }
+
+  render(state, dt) {
+    if (this.mode === '2d' || !this.gl) {
+      this.render2D(state);
+      return;
+    }
+    const gl = this.gl;
+    const time = state.time;
+    const light = lightForHour(state.hour);
+    // Camera: chase with snap on the first frame, smoothed after; iso on C.
+    const p = state.player;
+    const focus = p.onFoot
+      ? { x: p.x, z: p.z, heading: p.heading }
+      : { x: p.car.x, z: p.car.z, heading: p.car.heading };
+    const fwdX = Math.sin(focus.heading);
+    const fwdZ = -Math.cos(focus.heading);
+    let desired, target;
+    if (state.camera.mode === 'iso') {
+      desired = { x: focus.x, y: 110, z: focus.z + 60 };
+      target = { x: focus.x, y: 0, z: focus.z };
+    } else if (p.onFoot) {
+      // On foot the camera rides closer so the character reads on screen.
+      desired = { x: focus.x - fwdX * 9, y: 4, z: focus.z - fwdZ * 9 };
+      target = { x: focus.x + fwdX * 5, y: 1.2, z: focus.z + fwdZ * 5 };
+    } else {
+      desired = { x: focus.x - fwdX * 13, y: 5.5, z: focus.z - fwdZ * 13 };
+      target = { x: focus.x + fwdX * 7, y: 1.5, z: focus.z + fwdZ * 7 };
+    }
+    if (this.firstFrame || state.camera.snap) {
+      this.camPos = { ...desired };
+      this.camTarget = { ...target };
+      this.firstFrame = false;
+      state.camera.snap = false;
+    } else {
+      const k = 1 - Math.exp(-5 * dt);
+      this.camPos.x = lerp(this.camPos.x, desired.x, k);
+      this.camPos.y = lerp(this.camPos.y, desired.y, k);
+      this.camPos.z = lerp(this.camPos.z, desired.z, k);
+      const k2 = 1 - Math.exp(-8 * dt);
+      this.camTarget.x = lerp(this.camTarget.x, target.x, k2);
+      this.camTarget.y = lerp(this.camTarget.y, target.y, k2);
+      this.camTarget.z = lerp(this.camTarget.z, target.z, k2);
+    }
+    const aspect = this.w / Math.max(1, this.h);
+    const proj = mat4Perspective((62 * Math.PI) / 180, aspect, 0.5, 1200);
+    const view = mat4LookAt(this.camPos, this.camTarget, { x: 0, y: 1, z: 0 });
+    const mvp = mat4Multiply(proj, view);
+    gl.clearColor(light.sky[0], light.sky[1], light.sky[2], 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(this.prog);
+    gl.uniformMatrix4fv(this.loc.uMVP, false, mvp);
+    gl.uniform1f(this.loc.uTime, time);
+    gl.uniform3f(this.loc.uCamPos, this.camPos.x, this.camPos.y, this.camPos.z);
+    gl.uniform3f(this.loc.uSunDir, light.sunDir[0], light.sunDir[1], light.sunDir[2]);
+    gl.uniform3f(this.loc.uFogColor, light.fog[0], light.fog[1], light.fog[2]);
+    gl.uniform1f(this.loc.uFogNear, 70);
+    gl.uniform1f(this.loc.uFogFar, 430);
+    gl.uniform1f(this.loc.uAmbient, light.ambient);
+    const bindOnly = (buf, loc, size) => {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+    };
+    // Static world: buffers were uploaded once by buildStatic; just bind them.
+    bindOnly(this.staticBuf.pos, this.loc.aPos, 3);
+    bindOnly(this.staticBuf.col, this.loc.aColor, 3);
+    bindOnly(this.staticBuf.nor, this.loc.aNormal, 3);
+    bindOnly(this.staticBuf.wav, this.loc.aWave, 1);
+    gl.drawArrays(gl.TRIANGLES, 0, this.staticCount);
+    // Dynamic entities: rebuild and re-upload each frame.
+    const dyn = this.buildDynamic(state, time);
+    const upload = (buf, data) => { gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW); };
+    upload(this.dynBuf.pos, dyn.pos);
+    upload(this.dynBuf.col, dyn.col);
+    upload(this.dynBuf.nor, dyn.nor);
+    upload(this.dynBuf.wav, dyn.wav);
+    bindOnly(this.dynBuf.pos, this.loc.aPos, 3);
+    bindOnly(this.dynBuf.col, this.loc.aColor, 3);
+    bindOnly(this.dynBuf.nor, this.loc.aNormal, 3);
+    bindOnly(this.dynBuf.wav, this.loc.aWave, 1);
+    gl.drawArrays(gl.TRIANGLES, 0, dyn.count);
+  }
+
+  /** Top-down 2D fallback: same world state, drawn on the 2D canvas. */
+  render2D(state) {
+    const ctx = this.fallbackCanvas.getContext('2d');
+    const w = this.fallbackCanvas.width;
+    const h = this.fallbackCanvas.height;
+    const scale = Math.min(w, h) / 620;
+    const ox = w / 2;
+    const oy = h / 2;
+    const X = (x) => ox + x * scale;
+    const Z = (z) => oy + z * scale;
+    const S = (v) => v * scale;
+    ctx.fillStyle = '#0e3a5c';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#241f1b';
+    ctx.fillRect(X(-320), Z(-320), S(640), S(640));
+    ctx.fillStyle = '#9a7d55';
+    ctx.fillRect(X(-260), Z(-260), S(520), S(520));
+    ctx.strokeStyle = '#1b1b1e';
+    ctx.lineWidth = Math.max(2, S(10));
+    for (const lx of [-240, -180, -120, -60, 0, 60, 120, 180, 240]) {
+      ctx.beginPath(); ctx.moveTo(X(lx), Z(-260)); ctx.lineTo(X(lx), Z(260)); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(X(-260), Z(lx)); ctx.lineTo(X(260), Z(lx)); ctx.stroke();
+    }
+    for (const b of state.city.buildings) {
+      ctx.fillStyle = `rgb(${Math.floor(b.color[0] * 255)},${Math.floor(b.color[1] * 255)},${Math.floor(b.color[2] * 255)})`;
+      ctx.fillRect(X(b.x - b.hw), Z(b.z - b.hd), S(b.w), S(b.d));
+    }
+    const v = state.city.volcano;
+    ctx.fillStyle = '#4a3630';
+    ctx.beginPath(); ctx.arc(X(v.x), Z(v.z), S(v.r), 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ff5514';
+    ctx.beginPath(); ctx.arc(X(v.x), Z(v.z), S(9), 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#8a6a45';
+    ctx.fillRect(X(-332), Z(40), S(70), S(52));
+    for (const m of state.markers) {
+      ctx.fillStyle = '#ffd23f';
+      ctx.beginPath(); ctx.arc(X(m.x), Z(m.z), 6 + Math.sin(state.time * 4) * 2, 0, Math.PI * 2); ctx.fill();
+    }
+    for (const car of state.cars) {
+      ctx.save();
+      ctx.translate(X(car.x), Z(car.z));
+      ctx.rotate(-car.heading);
+      ctx.fillStyle = car.isCop ? '#2244cc' : car.isPlayer ? '#ff5533' : '#cccccc';
+      ctx.fillRect(-S(1.1), -S(2.2), S(2.2), S(4.4));
+      ctx.restore();
+    }
+    for (const ped of state.peds) {
+      ctx.fillStyle = '#e8d8b0';
+      ctx.fillRect(X(ped.x) - 2, Z(ped.z) - 2, 4, 4);
+    }
+    const heli = state.police.heli;
+    if (heli.active) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.beginPath(); ctx.arc(X(heli.x), Z(heli.z), 10, 0, Math.PI * 2); ctx.stroke();
+    }
+    const p = state.player;
+    const px = p.onFoot ? p.x : p.car.x;
+    const pz = p.onFoot ? p.z : p.car.z;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(X(px), Z(pz), 6, 0, Math.PI * 2); ctx.fill();
+  }
 }

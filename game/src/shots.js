@@ -1,76 +1,91 @@
-// shots.js — deterministic screenshot poses for CALDERA VIVA.
-// ?shot=1..4 starts the game, stages a scene (chase, street life, heli +
-// roadblock, finale) and leaves the world still enough for a clean capture.
-// These poses only run when the URL asks for them; normal play never sees them.
+// shots.js — the four staged scenes for the entry's screenshots (?shot=1..4).
+// Each one sets a real game state (mission, time of day, wanted level, crew)
+// and lets the renderer draw it: every screenshot is a live render of the
+// game's own code, never a still image.
 
-import { makeCar } from './vehicles.js';
 import { startMission } from './missions.js';
+import { makeCar } from './vehicles.js';
+import { addHeat } from './police.js';
 
-function stageChase(game, wanted, withHeli, withRoadblock) {
-  game.setWanted(wanted);
-  const p = game.player;
-  p.inCar = true;
-  p.car = game.missionCars[0] || makeCar('coupe', p.x, p.z, p.angle);
-  p.car.x = p.x; p.car.z = p.z; p.car.angle = p.angle;
-  for (let i = 0; i < (wanted >= 4 ? 3 : 2); i++) {
-    const c = makeCar('police', p.x - 14 - i * 9, p.z - 18 - i * 4, p.angle);
-    c.police = true; c.lightOn = true;
-    game.police.cars.push(c);
-  }
-  if (withHeli) game.police.heli = { x: p.x + 25, y: 48, z: p.z - 10, angle: 0.6 };
-  if (withRoadblock) {
-    const rb = [];
-    for (let i = -1; i <= 1; i++) {
-      const c = makeCar('police', p.x + i * 5, p.z + 46, Math.PI / 2);
-      c.police = true; c.lightOn = true; rb.push(c);
-    }
-    game.police.roadblock = { cars: rb, x: p.x, z: p.z + 46, ttl: 60 };
-  }
+export const SHOT_DEFS = [
+  { name: '1-cover.jpg', query: '?shot=1', caption: 'Plaza Brasa at dusk, mission 1' },
+  { name: '2-street.jpg', query: '?shot=2', caption: 'Boardwalk at night, on foot, wanted 2' },
+  { name: '3-chase.jpg', query: '?shot=3', caption: 'Bridge chase, ARIETE PIT and CORMORÁN-1' },
+  { name: '4-mission.jpg', query: '?shot=4', caption: 'Mission 10 at dawn, volcano road' },
+];
+
+/** Put the player in a car at (x, z) facing `heading`. */
+function putInCar(state, x, z, heading) {
+  const car = makeCar(x, z, heading, [0.9, 0.25, 0.3], { isPlayer: true, maxSpeed: 28, accel: 15 });
+  state.cars.push(car);
+  state.player.car = car;
+  state.player.onFoot = false;
+  state.player.x = x;
+  state.player.z = z;
+  state.player.heading = heading;
+  return car;
 }
 
-export function applyShot(game, n) {
-  const g = game;
-  g.missions.available = 10;
-  g.camMode = 'chase';
+function putCop(state, x, z, ariete) {
+  const car = makeCar(x, z, 0, ariete ? [0.12, 0.12, 0.14] : [0.9, 0.9, 0.92], {
+    isCop: true, isAriete: !!ariete, maxSpeed: ariete ? 27 : 24, accel: 16, health: 120,
+  });
+  state.cars.push(car);
+  return car;
+}
+
+export function applyShot(state, n, audio) {
+  state.mode = 'playing';
+  state.hour = 18.2;
+  state.camera.mode = 'chase';
+  state.camera.snap = true;
   if (n === 1) {
-    // Cover: sunset avenue chase into the city, wanted 3, mission 5 in progress.
-    g.setTimeOfDay(17.5);
-    g.player.x = 0; g.player.z = 145; g.player.angle = Math.PI; g.player.heading = Math.PI;
-    startMission(g, 5);
-    // Stage the hero car as the red Vela Coupe for a readable cover.
-    const hero = makeCar('coupe', 0, 145, Math.PI);
-    g.missionCars.push(hero);
-    g.player.x = 0; g.player.z = 145;
-    g.player.inCar = true; g.player.car = hero;
-    for (let i = 0; i < 2; i++) {
-      const c = makeCar('police', -4 + i * 8, 145 - 22 - i * 6, Math.PI);
-      c.police = true; c.lightOn = true;
-      g.police.cars.push(c);
-    }
-    g.setWanted(3);
-    g.toast('MISI 5 — Ariete di Jembatan', 'Bertahan dari MURALLA & ARIETE');
+    // Cover: dusk over Plaza Brasa, mission 1 just started, in the red car.
+    state.hour = 18.2;
+    putInCar(state, 0, 26, 0);
+    startMission(state, 1, audio);
+    state.markers = [{ x: 45, z: 135, color: [1.0, 0.85, 0.2] }];
   } else if (n === 2) {
-    // Street life: on foot in Plaza Brasa, traffic and pedestrians.
-    g.setTimeOfDay(10.0);
-    g.player.x = 6; g.player.z = -6; g.player.angle = 0.6; g.player.heading = 0.6;
-    startMission(g, 2);
-    g.toast('MISI 2 — Kotak untuk Brasa', 'Antar kotak terkunci ke Mara');
+    // Street: night on the Boardwalk, on foot, weapon wheel open, wanted 2.
+    // The player faces west down the boardwalk street, neon ahead, GIC behind.
+    state.hour = 21.4;
+    state.player.onFoot = true;
+    state.player.x = 120;
+    state.player.z = 210;
+    state.player.heading = -Math.PI / 2;
+    state.player.weapon = 'smg';
+    addHeat(state, 35);
+    putCop(state, 95, 205, false);
+    putCop(state, 100, 218, false);
+    state._wheelOpen = true;
+    state.toast = 'Boardwalk, 21:24 — GIC mengejar. Senjata: SMG.';
   } else if (n === 3) {
-    // Heli + roadblock: wanted 4 on the main avenue at dusk.
-    g.setTimeOfDay(18.5);
-    g.player.x = 0; g.player.z = 40; g.player.angle = Math.PI; g.player.heading = Math.PI;
-    startMission(g, 6);
-    g.player.x = 0; g.player.z = 40;
-    stageChase(g, 4, true, true);
-    g.toast('CORMORÁN-1 di udara', 'Putus garis pandang di gedung parkir');
-  } else {
-    // Finale: mansion raid at night, wanted 5.
-    g.setTimeOfDay(21.0);
-    g.player.x = -138; g.player.z = -128; g.player.angle = 0.8; g.player.heading = 0.8;
-    startMission(g, 10);
-    g.player.x = -138; g.player.z = -128;
-    stageChase(g, 5, true, false);
-    g.toast('MISI 10 — Caldera Terbakar', 'Serbu mansion kartel — kabur ke laut');
+    // Chase: the bridge at dusk, wanted 4, ARIETE PIT units and the helicopter.
+    state.hour = 18.6;
+    putInCar(state, 240, 92, 0);
+    state.player.car.speed = 22;
+    addHeat(state, 75);
+    putCop(state, 232, 78, true);
+    putCop(state, 248, 80, true);
+    putCop(state, 240, 110, false);
+    state.police.heli.active = true;
+    state.police.heli.x = 240;
+    state.police.heli.z = 60;
+    state.toast = 'Jembatan timur — ARIETE mengepit, CORMORÁN-1 di atas.';
+  } else if (n === 4) {
+    // Mission: dawn on the volcano road, mission 10, helicopter overhead.
+    // The player waits on the open north road so the volcano, the marker and
+    // the dawn city are all in frame instead of one dark cone.
+    state.hour = 6.4;
+    putInCar(state, 0, -60, 0);
+    startMission(state, 10, audio);
+    addHeat(state, 55);
+    state.police.heli.active = true;
+    state.police.heli.x = 0;
+    state.police.heli.z = -140;
+    putCop(state, 0, -100, false);
+    state.toast = 'M10 Caldera Terbakar — fajar di kaki gunung berapi.';
   }
-  g.hud.update();
+  // Let the world settle, then the shot is ready (main.js counts the frames).
+  state._shotFramesLeft = 4;
 }
