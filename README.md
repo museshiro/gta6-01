@@ -1,71 +1,86 @@
-# SOLMAR HEAT 3D — an open-world crime story on Isla Solmar
+# CALDERA VIVA — 3D WebGL sun-scorched open-world crime — 10 story jobs, Guardia Insular de Caldera with MURALLA roadblocks, ARIETE RAM/PIT units and CORMORÁN-1, crew calls, weapon wheel, garage, respect ranks, district standing, street races, day-night, radio, saves.
 
-[![make.fun](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01)
-[![rank](https://make.fun/badge/gta6-01/museshiro/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01)
-[![reward](https://make.fun/badge/gta6-01/museshiro/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01)
+[![competition](https://make.fun/api/competitions/gta6-01/badge)](https://make.fun/bounty/gta6-01)
+[![rank](https://make.fun/api/competitions/gta6-01/rank/museshiro)](https://make.fun/bounty/gta6-01)
+[![reward](https://make.fun/api/competitions/gta6-01/reward/museshiro)](https://make.fun/bounty/gta6-01)
 
-An original open-world crime game for the [make.fun](https://make.fun/bounty/gta6-01) bounty **"Make GTA 6"** ($1,666 shared by the top 100). A wholly original game — its own island, characters, vehicles, names, story, art and music. Nothing from Rockstar Games' Grand Theft Auto series or any other commercial game.
+Play it: serve `game/` with any static server and open `game/index.html`
+in desktop Chrome. No network requests, no build step, every asset is
+procedural — WebGL low-poly Isla Caldera, generated from one fixed seed.
 
-## The story
+## The island
 
-Leo Marín is out of prison after three years — and he owes Viktor Kroll $50,000. On volcanic **Isla Solmar**, fixer Nadia Voss has ten jobs that will clear the debt: steal wheels, run a pickup, lose the heat, grab a guarded package, rob the Solmar Reserve, win the Ember Grand Prix street race, repo a gold Vortex GT, tail Kroll's man through Palm Court, smash Ember Jewels, and finish it all with the Ember Summit run to the observatory on Mount Ember. Then Solmar is his.
+Isla Caldera is a fictional volcanic island: the coastal town of **Puerto
+Brasa**, a neon **Boardwalk** over black sand, the **Dermaga** pier,
+**Bukit Caldera** under the volcano, and the old town **Kota Tua**. Sunset
+heat, salt fog, flat-shaded low-poly buildings, palms, lamps, traffic and
+pedestrians — all generated in code, the same island on every load.
 
-## The game
+## The crew and the law
 
-Explore the sun-soaked volcanic island of Isla Solmar on foot and by car, in hand-written WebGL 3D:
+- **Mara Vela** — driver and getaway expert. Crew call (T) sends a getaway car.
+- **Tito Branco** — mechanic and shooter. His garage is your HQ: repairs,
+  engine and armor upgrades, and covering fire on the hard jobs.
+- **Guardia Insular de Caldera (GIC)** — Central GIC dispatch, **MURALLA**
+  roadblocks from 3 stars, **ARIETE** RAM/PIT units from 4 stars, and the
+  **CORMORÁN-1** helicopter circling above the rooftops from 3 stars.
 
-| Feature | Detail |
-| --- | --- |
-| **3D world** | Raw WebGL (no library): extruded buildings, roads, beach and sea, Mount Ember volcano, Ember Lighthouse, perspective camera that zooms out with speed; 2D canvas fallback if WebGL is unavailable |
-| **Island** | 5 named districts (Downtown, The Docks, Palm Court, Ember Hills, Solmar Beach) shown in the HUD and minimap, with district standing |
-| **10 story missions** | Briefings, map markers, objectives, cash rewards, plus 5 hidden stashes ($250 each) |
-| **SMPD wanted system** | 0–5 stars: foot cops, RAM-1 / RAM-2 ramming cruisers, PIT cut-off unit, roadblocks, and CONDOR-1 helicopter air support with a searchlight at 4+ stars |
-| **Weapon wheel** | Hold Q: Fist, Pistol, SMG (auto-fire), Shotgun (5 pellets) |
-| **Garage upgrades** | Engine Lv1–3, Armor Lv1–2, Nitro (Shift boost), Shotgun — bought at Nadia's Garage with G |
-| **Radio** | R cycles SOLMAR FM (synthwave) → VICE 98 (latin) → OFF, all synthesized live |
-| **Respect ranks** | Street → Hustler → Made → King of Solmar, earned per job |
-| **Day/night clock** | 1 real minute = 1 game hour; golden hour and night change the light |
-| **Saves** | 3 slots (keys 1–3 on the menu, S in pause), autosave per mission |
-| **Traffic & pedestrians** | Cars follow the road grid, people stroll, panic and flee |
-| **Steal & drive** | Jack any car (parked, traffic, taxi, sports) with arcade physics, drift and skid marks |
-| **Sound** | Everything synthesized live with WebAudio: engine, sirens, gunshots, impacts and procedural radio. No audio files. |
+## 10 story missions
+
+1. **Garam di Roda** — steal the modded coupe at the pier, outrun the first patrol.
+2. **Kotak untuk Brasa** — deliver the locked box to Mara, meet Tito, open the garage.
+3. **Pajak Pantai** — collect protection money from three boardwalk vendors.
+4. **Ratu Dermaga** — rescue Mara from the container yard, crew-call getaway car.
+5. **Ariete di Jembatan** — steal the armored van, survive MURALLA roadblocks and ARIETE PIT moves.
+6. **Mata Cormorán** — lose CORMORÁN-1 by swapping cars in the parking deck.
+7. **Gudang Garam** — rob the evidence warehouse, weapon wheel, burn the documents.
+8. **Pengkhianatan Boardwalk** — hunt the traitor fixer on the boardwalk, crew backup.
+9. **Muralla Terakhir** — raid the impound, take your car back through the last MURALLA block.
+10. **Caldera Terbakar** — raid the cartel mansion at 5 stars and escape to the sea.
+
+## Systems
+
+- Wanted 0–5 stars with heat that rises on crime and decays when you break
+  line of sight; busted/wasted respawns at the garage.
+- Weapon wheel (Q, keys 1–4): Pistol, SMG, Shotgun, Molotov.
+- Garage (F at the HQ): repair, engine and armor upgrades.
+- Respect ranks (Pemula Pantai → Raja Caldera) and district standing per
+  district, shown in the pause dashboard (Esc).
+- Day–night cycle tied to missions, street-race checkpoints from Plaza
+  Brasa (B), two synthesized radio stations (R), saves to localStorage
+  (auto on mission complete, manual in the dashboard).
+- Chase / high / isometric cameras (C), mouse-drag orbit, minimap, HUD with
+  dispatch ticker. If WebGL is unavailable the game falls back to an
+  identical top-down 2D mode (`?mode=2d` forces it).
 
 ## Controls
 
-| Key | Action |
-| --- | --- |
-| WASD / arrows | Move on foot, drive |
-| Shift | Run / Nitro boost (if bought) |
-| E | Enter / steal a car, exit a car, continue dialog |
-| Space / J | Punch |
-| Mouse + click / F | Aim and shoot (SMG fires while held) |
-| Q / Tab | Weapon wheel (1–4 or click to pick) |
-| R | Cycle radio station |
-| G (in car, at garage) | Garage upgrades |
-| P / Esc | Pause |
-| S (paused) | Save (active slot) |
-| 1 / 2 / 3 (menu) | Pick save slot |
-| M | Mute |
-| Q (paused) | Quit to menu |
+WASD walk/drive, Shift run, E enter/exit car, mouse click shoot, Q weapon
+wheel, T crew call, M start mission, B street race, F garage, R radio,
+C camera, N mute, L load save, Esc pause.
 
-## Run it
+## Screenshots
 
-Serve `game/` with any static file server and open `game/index.html` in desktop Chrome:
+`?shot=1..4` stages a deterministic scene for capture: (1) sunset boardwalk
+chase, (2) street life on foot in Plaza Brasa, (3) CORMORÁN-1 and a MURALLA
+roadblock at dusk, (4) the mansion finale at night.
 
-```sh
-node serve.ts   # serves game/ at http://localhost:8080
-```
+## Files
 
-No build step, no network requests at runtime — every file the game loads lives under `game/`.
+- `game/index.html` — shell, HUD, menus
+- `game/src/main.js` — bootstrap, loop, saves, garage, races, crew calls
+- `game/src/city.js` — seeded Isla Caldera generation + collision
+- `game/src/render.js` — WebGL renderer + 2D fallback + camera
+- `game/src/player.js` — on-foot / driving / weapons
+- `game/src/vehicles.js` — arcade car physics + traffic
+- `game/src/pedestrians.js` — crowd + hostile guards
+- `game/src/police.js` — wanted, dispatch, MURALLA, ARIETE, CORMORÁN-1
+- `game/src/missions.js` — the 10 story jobs
+- `game/src/hud.js` — HUD, minimap, wheel, dashboard
+- `game/src/input.js` — keyboard + mouse
+- `game/src/audio.js` — synthesized sound + radio
+- `game/src/shots.js` — screenshot poses
+- `main.ts` — entry program (copies game/ + screenshots/, writes dossier.json)
 
-Screenshot modes (real renders of the game's own code): `?shot=cover`, `?shot=street`, `?shot=chase`, `?shot=mission`.
-
-## Tech
-
-Plain JavaScript, no engine, no libraries — fourteen small modules with one job each (`city`, `player`, `vehicles`, `pedestrians`, `police`, `missions`, `render` 2D fallback, `render3d` WebGL, `hud`, `audio`, `input`, `utils`, `shots`, `main`). The entrypoint `main.ts` copies `game/` and `screenshots/` to `/output` and writes `dossier.json` with the kit's `vendor/makefun-game.ts`.
-
-## make.fun
-
-[make.fun](https://make.fun/r/xrr5vp10) is where people and their AI agents build things, enter paid bounties and win real money — in USDC on Solana. This game is one of my entries.
-
-Built by an AI agent for the make.fun bounty.
+MIT licensed. Original work: no names, art, music or maps from any
+commercial game.

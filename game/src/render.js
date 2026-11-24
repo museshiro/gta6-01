@@ -1,477 +1,353 @@
-// SOLMAR HEAT 3D — render.js
-// The 2D canvas renderer: the fallback when WebGL is unavailable, and the
-// reference look of the game. Draws the whole world top-down: ground, sea
-// and beach, roads with lane markings, blocks, buildings with sun shadows
-// and rooftops, Mount Ember and the Ember Lighthouse, parks and trees,
-// cars, pedestrians, the player, the CONDOR-1 helicopter, particles and
-// skid marks, then a day/night light overlay driven by the game clock.
-// Camera follows the player with a smooth lerp, zooming out at speed,
-// plus trauma-based screen shake.
-function createRenderer(G) {
-  const ctx = G.ctx;
+// render.js — WebGL low-poly renderer for CALDERA VIVA, plus a 2D top-down
+// fallback used when WebGL is unavailable (?mode=2d or context failure).
+// One shader, vertex colours, flat lambert light, distance fog, animated sea.
 
-  function drawGround(cam) {
-    const { x0, y0, x1, y1 } = cam.view;
-    // Base ground: warm dry grass / dirt.
-    ctx.fillStyle = '#c9b489';
-    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-    // Water (east sea) with a slow shimmer.
-    const w = G.city.water;
-    ctx.fillStyle = '#2f7fb8';
-    ctx.fillRect(w.x, Math.max(y0, 0), w.w, Math.min(y1, G.city.H) - Math.max(y0, 0));
-    ctx.fillStyle = 'rgba(255,255,255,0.10)';
-    const t = G.time;
-    for (let i = 0; i < 8; i++) {
-      const wy = ((i * 300 + t * 22) % (G.city.H + 120)) - 60;
-      ctx.fillRect(w.x + 12 + (i % 3) * 44, wy, 60, 3);
-    }
-    // Beach sand.
-    ctx.fillStyle = '#e8d5a0';
-    ctx.fillRect(G.city.beach.x, Math.max(y0, 0), G.city.beach.w, Math.min(y1, G.city.H) - Math.max(y0, 0));
-    // Parks.
-    for (const p of G.city.parks) {
-      ctx.fillStyle = '#7fae62';
-      ctx.fillRect(p.x, p.y, p.w, p.h);
-      ctx.fillStyle = '#8fbf72';
-      ctx.fillRect(p.x + 10, p.y + 10, p.w - 20, p.h - 20);
-    }
-    // Mount Ember: the volcano cone in the north-west, with a smoking crater.
-    const v = G.city.volcano;
-    if (v.x + v.r > x0 && v.x - v.r < x1 && v.y + v.r > y0 && v.y - v.r < y1) {
-      ctx.fillStyle = '#5a3a28';
-      ctx.beginPath(); ctx.arc(v.x, v.y, v.r, 0, U.TAU); ctx.fill();
-      ctx.fillStyle = '#7a4a30';
-      ctx.beginPath(); ctx.arc(v.x, v.y, v.r * 0.72, 0, U.TAU); ctx.fill();
-      ctx.fillStyle = '#2b1a12';
-      ctx.beginPath(); ctx.arc(v.x, v.y, v.r * 0.3, 0, U.TAU); ctx.fill();
-      // Smoke puffs drifting off the crater.
-      ctx.fillStyle = 'rgba(154,154,154,0.55)';
-      for (let i = 0; i < 3; i++) {
-        const sy = v.y - 30 - ((G.time * 26 + i * 55) % 110);
-        ctx.beginPath(); ctx.arc(v.x + Math.sin(G.time * 0.5 + i * 2) * 24, sy, 14 + i * 6, 0, U.TAU); ctx.fill();
-      }
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 13px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('▲ MOUNT EMBER', v.x, v.y + v.r + 18);
-    }
-    // Ember Lighthouse at the southern tip of the beach.
-    const lh = G.city.lighthouse;
-    if (lh.x > x0 - 60 && lh.x < x1 + 60 && lh.y > y0 - 60 && lh.y < y1 + 60) {
-      ctx.fillStyle = '#f2f2f2';
-      ctx.beginPath(); ctx.arc(lh.x, lh.y, lh.r, 0, U.TAU); ctx.fill();
-      ctx.fillStyle = '#c94f4f';
-      ctx.beginPath(); ctx.arc(lh.x, lh.y, lh.r * 0.55, 0, U.TAU); ctx.fill();
-      ctx.fillStyle = '#ffd34d';
-      ctx.beginPath(); ctx.arc(lh.x, lh.y, 6, 0, U.TAU); ctx.fill();
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 12px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('EMBER LIGHTHOUSE', lh.x - 30, lh.y + 44);
+import {
+  mat4Identity, mat4Multiply, mat4Perspective, mat4LookAt,
+  mat4Translate, mat4Scale, mat4RotateY, clamp, lerp,
+} from './utils.js';
+import { BEACH_Z, WATER_Z, WORLD_BOUND } from './city.js';
+
+const VERT = `
+attribute vec3 aPos; attribute vec3 aNorm; attribute vec3 aCol;
+uniform mat4 uProj; uniform mat4 uView; uniform mat4 uModel;
+uniform vec3 uTint; uniform float uTime; uniform float uWater; uniform vec3 uCam;
+varying vec3 vCol; varying vec3 vNorm; varying float vDist;
+void main(){
+  vec3 p = aPos;
+  if (uWater > 0.5) p.y += sin(p.x * 0.08 + uTime * 1.4) * 0.5 + cos(p.z * 0.06 + uTime) * 0.4;
+  vec4 w = uModel * vec4(p, 1.0);
+  vCol = aCol * uTint;
+  vNorm = mat3(uModel) * aNorm;
+  vDist = distance(w.xyz, uCam);
+  gl_Position = uProj * uView * w;
+}`;
+const FRAG = `
+precision mediump float;
+varying vec3 vCol; varying vec3 vNorm; varying float vDist;
+uniform vec3 uSun; uniform vec3 uFog; uniform float uFogNear; uniform float uFogFar;
+uniform vec3 uCam;
+void main(){
+  float d = max(dot(normalize(vNorm), normalize(uSun)), 0.0);
+  vec3 col = vCol * (0.52 + 0.48 * d);
+  float f = smoothstep(uFogNear, uFogFar, vDist);
+  gl_FragColor = vec4(mix(col, uFog, f), 1.0);
+}`;
+
+// Sky palettes by time of day (hour 0-24): [sky, fog, sunDir, sunStrength]
+export function skyFor(hour) {
+  if (hour >= 6 && hour < 10) return { sky: [0.98, 0.72, 0.45], fog: [0.98, 0.72, 0.48], sun: [0.6, 0.5, 0.4] };
+  if (hour >= 10 && hour < 16) return { sky: [0.45, 0.75, 0.92], fog: [0.62, 0.78, 0.88], sun: [0.4, 0.9, 0.3] };
+  if (hour >= 16 && hour < 19) return { sky: [0.99, 0.55, 0.32], fog: [0.96, 0.55, 0.38], sun: [-0.7, 0.35, 0.5] };
+  if (hour >= 19 && hour < 21) return { sky: [0.45, 0.28, 0.55], fog: [0.55, 0.32, 0.55], sun: [-0.8, 0.15, 0.3] };
+  return { sky: [0.08, 0.10, 0.22], fog: [0.10, 0.12, 0.25], sun: [0.2, 0.6, -0.4] };
+}
+
+class MeshBuilder {
+  constructor() { this.pos = []; this.nor = []; this.col = []; }
+  quad(a, b, c, d, n, col) {
+    // two triangles a-b-c, a-c-d with one normal and colour
+    const vs = [a, b, c, a, c, d];
+    for (const v of vs) { this.pos.push(v[0], v[1], v[2]); this.nor.push(n[0], n[1], n[2]); this.col.push(col[0], col[1], col[2]); }
+  }
+  box(cx, cy, cz, sx, sy, sz, col, topCol) {
+    const x0 = cx - sx / 2, x1 = cx + sx / 2, y0 = cy - sy / 2, y1 = cy + sy / 2, z0 = cz - sz / 2, z1 = cz + sz / 2;
+    const top = topCol || col;
+    this.quad([x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0], [0, 1, 0], top);
+    this.quad([x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [0, -1, 0], [col[0] * 0.5, col[1] * 0.5, col[2] * 0.5]);
+    this.quad([x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1], col);
+    this.quad([x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [0, 0, -1], col);
+    this.quad([x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [1, 0, 0], col);
+    this.quad([x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [-1, 0, 0], col);
+  }
+  cone(cx, cz, baseY, h, r, col, seg) {
+    for (let i = 0; i < seg; i++) {
+      const a0 = (i / seg) * Math.PI * 2, a1 = ((i + 1) / seg) * Math.PI * 2;
+      const p0 = [cx + Math.cos(a0) * r, baseY, cz + Math.sin(a0) * r];
+      const p1 = [cx + Math.cos(a1) * r, baseY, cz + Math.sin(a1) * r];
+      const top = [cx, baseY + h, cz];
+      const n = [Math.cos((a0 + a1) / 2) * 0.7, 0.7, Math.sin((a0 + a1) / 2) * 0.7];
+      this.pos.push(...p0, ...p1, ...top);
+      for (let k = 0; k < 3; k++) { this.nor.push(n[0], n[1], n[2]); this.col.push(col[0], col[1], col[2]); }
     }
   }
+  toArrays() {
+    return {
+      pos: new Float32Array(this.pos), nor: new Float32Array(this.nor),
+      col: new Float32Array(this.col), count: this.pos.length / 3,
+    };
+  }
+}
 
-  function drawRoads(cam) {
-    const { x0, y0, x1, y1 } = cam.view;
-    const RW = G.city.ROAD_W;
-    ctx.fillStyle = '#3d3a38';
-    for (const rx of G.city.roadsV) ctx.fillRect(rx - RW / 2, y0, RW, y1 - y0);
-    for (const ry of G.city.roadsH) ctx.fillRect(x0, ry - RW / 2, x1 - x0, RW);
-    // Sidewalk edging.
-    ctx.fillStyle = '#a89a80';
-    for (const rx of G.city.roadsV) {
-      ctx.fillRect(rx - RW / 2 - 7, y0, 7, y1 - y0);
-      ctx.fillRect(rx + RW / 2, y0, 7, y1 - y0);
-    }
-    for (const ry of G.city.roadsH) {
-      ctx.fillRect(x0, ry - RW / 2 - 7, RW + 14, 7);
-      ctx.fillRect(x0, ry + RW / 2, RW + 14, 7);
-    }
-    // Lane dashes.
-    ctx.fillStyle = '#e8d44d';
-    for (const rx of G.city.roadsV) {
-      for (let y = Math.floor(y0 / 44) * 44; y < y1; y += 44) ctx.fillRect(rx - 2, y, 4, 22);
-    }
-    for (const ry of G.city.roadsH) {
-      for (let x = Math.floor(x0 / 44) * 44; x < x1; x += 44) ctx.fillRect(x, ry - 2, 22, 4);
-    }
-    // Crosswalks at intersections.
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    for (const rx of G.city.roadsV) {
-      for (const ry of G.city.roadsH) {
-        for (let i = -3; i <= 3; i++) {
-          ctx.fillRect(rx + i * 12 - 4, ry - RW / 2 + 6, 7, 12);
-          ctx.fillRect(rx + i * 12 - 4, ry + RW / 2 - 18, 7, 12);
-        }
-      }
-    }
+function buildWorldMesh(city) {
+  const b = new MeshBuilder();
+  // Ground base: dry grass / dirt.
+  b.box(0, -0.6, -40, WORLD_BOUND * 2 + 120, 1, WORLD_BOUND * 2 + 120, [0.55, 0.48, 0.32]);
+  // Black-sand beach strip.
+  b.box(0, -0.35, (BEACH_Z + WATER_Z) / 2 + 4, WORLD_BOUND * 2 + 120, 0.6, WATER_Z - BEACH_Z + 12, [0.16, 0.14, 0.15]);
+  // Roads: dark asphalt strips with pale sidewalks.
+  for (const rx of city.roadsX) b.box(rx, -0.15, 0, 12, 0.5, WORLD_BOUND * 2, [0.22, 0.22, 0.25]);
+  for (const rz of city.roadsZ) b.box(0, -0.15, rz, WORLD_BOUND * 2, 0.5, 12, [0.22, 0.22, 0.25]);
+  for (const rx of city.roadsX) {
+    b.box(rx - 8, -0.1, 0, 4, 0.4, WORLD_BOUND * 2, [0.62, 0.58, 0.52]);
+    b.box(rx + 8, -0.1, 0, 4, 0.4, WORLD_BOUND * 2, [0.62, 0.58, 0.52]);
+  }
+  // Centre dashes.
+  for (const rx of city.roadsX) for (let z = -200; z <= 200; z += 16) b.box(rx, 0.12, z, 0.6, 0.08, 6, [0.95, 0.85, 0.4]);
+  for (const rz of city.roadsZ) for (let x = -200; x <= 200; x += 16) b.box(x, 0.12, rz, 6, 0.08, 0.6, [0.95, 0.85, 0.4]);
+  // Plazas.
+  for (const p of city.plazas) b.box(p.x, -0.1, p.z, p.w, 0.4, p.d, [0.75, 0.68, 0.55]);
+  // Buildings with glass band near the top.
+  for (const bd of city.buildings) {
+    b.box(bd.x, bd.h / 2, bd.z, bd.w, bd.h, bd.d, bd.color, bd.roof);
+    b.box(bd.x, bd.h * 0.72, bd.z, bd.w + 0.15, bd.h * 0.18, bd.d + 0.15, [0.35, 0.55, 0.65]);
+  }
+  // Palms: trunk + frond crown.
+  for (const t of city.trees) {
+    b.box(t.x, 1.6 * t.s, t.z, 0.35 * t.s, 3.2 * t.s, 0.35 * t.s, [0.45, 0.32, 0.20]);
+    b.box(t.x, 3.4 * t.s, t.z, 3.4 * t.s, 0.5 * t.s, 3.4 * t.s, [0.15, 0.55, 0.25]);
+  }
+  // Lamps: pole + head.
+  for (const l of city.lamps) {
+    b.box(l.x, 2.6, l.z, 0.18, 5.2, 0.18, [0.25, 0.25, 0.28]);
+    b.box(l.x, 5.3, l.z, 0.7, 0.3, 0.7, [1.0, 0.9, 0.6]);
+  }
+  // Pier deck + posts.
+  b.box(30, 0.4, 222, 26, 0.8, 34, [0.55, 0.42, 0.28]);
+  for (let z = 210; z <= 238; z += 7) { b.box(19, -0.5, z, 1, 2, 1, [0.4, 0.3, 0.2]); b.box(41, -0.5, z, 1, 2, 1, [0.4, 0.3, 0.2]); }
+  // Volcano cone far north + glowing crater rim.
+  b.cone(0, -330, 0, 130, 150, [0.32, 0.24, 0.22], 12);
+  b.cone(0, -330, 118, 14, 22, [0.95, 0.35, 0.10], 12);
+  // Boardwalk neon strip.
+  b.box(0, 0.25, 176, 260, 0.5, 3, [0.95, 0.35, 0.55]);
+  // Garage block + impound fence + mansion wall (visible anchors).
+  b.box(-52, 3, 97, 18, 6, 12, [0.85, 0.55, 0.25], [0.35, 0.30, 0.28]);
+  b.box(120, 2, -140, 24, 4, 16, [0.45, 0.45, 0.50], [0.30, 0.30, 0.34]);
+  b.box(-150, 4, -150, 26, 8, 18, [0.92, 0.88, 0.78], [0.55, 0.25, 0.18]);
+  return b.toArrays();
+}
+
+function buildWaterMesh() {
+  const b = new MeshBuilder();
+  b.box(0, -0.8, 320, WORLD_BOUND * 2 + 400, 0.6, 260, [0.10, 0.35, 0.55]);
+  return b.toArrays();
+}
+
+function buildUnitBox() {
+  const b = new MeshBuilder();
+  b.box(0, 0, 0, 1, 1, 1, [1, 1, 1]);
+  return b.toArrays();
+}
+
+export function createRenderer(canvas, city) {
+  const params = new URLSearchParams(location.search);
+  let gl = null;
+  if (params.get('mode') !== '2d') {
+    try { gl = canvas.getContext('webgl', { antialias: true }) || canvas.getContext('experimental-webgl'); } catch (e) { gl = null; }
+  }
+  const ctx2d = canvas.getContext('2d');
+  const state = { mode: gl ? '3d' : '2d', time: 0, camMode: 'chase', orbitYaw: 0, orbitPitch: 0 };
+
+  let prog = null, bufWorld = null, bufWater = null, bufUnit = null, uni = {};
+  if (gl) {
+    const compile = (type, src) => {
+      const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error('shader: ' + gl.getShaderInfoLog(s));
+      return s;
+    };
+    prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+    gl.linkProgram(prog);
+    gl.useProgram(prog);
+    uni = {
+      proj: gl.getUniformLocation(prog, 'uProj'), view: gl.getUniformLocation(prog, 'uView'),
+      model: gl.getUniformLocation(prog, 'uModel'), tint: gl.getUniformLocation(prog, 'uTint'),
+      time: gl.getUniformLocation(prog, 'uTime'), water: gl.getUniformLocation(prog, 'uWater'),
+      sun: gl.getUniformLocation(prog, 'uSun'), fog: gl.getUniformLocation(prog, 'uFog'),
+      fogNear: gl.getUniformLocation(prog, 'uFogNear'), fogFar: gl.getUniformLocation(prog, 'uFogFar'),
+      cam: gl.getUniformLocation(prog, 'uCam'),
+    };
+    const mkBuf = (arr) => {
+      const mk = (data, loc, size) => {
+        const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+        return buf;
+      };
+      const posLoc = gl.getAttribLocation(prog, 'aPos'), norLoc = gl.getAttribLocation(prog, 'aNorm'), colLoc = gl.getAttribLocation(prog, 'aCol');
+      return {
+        pos: mk(arr.pos, posLoc, 3), nor: mk(arr.nor, norLoc, 3), col: mk(arr.col, colLoc, 3),
+        count: arr.count,
+      };
+    };
+    bufWorld = mkBuf(buildWorldMesh(city));
+    bufWater = mkBuf(buildWaterMesh());
+    bufUnit = mkBuf(buildUnitBox());
+    gl.enable(gl.DEPTH_TEST);
   }
 
-  function drawBuildings(cam) {
-    const { x0, y0, x1, y1 } = cam.view;
-    for (const b of G.city.buildings) {
-      if (b.x > x1 || b.x + b.w < x0 || b.y > y1 || b.y + b.h < y0) continue;
-      // Sun shadow (offset down-right).
-      ctx.fillStyle = 'rgba(0,0,0,0.20)';
-      ctx.fillRect(b.x + b.h * 0.5, b.y + b.h * 0.5, b.w, b.h);
-      // Walls.
-      ctx.fillStyle = b.color;
-      ctx.fillRect(b.x, b.y, b.w, b.h);
-      // Roof inset.
-      ctx.fillStyle = b.roof;
-      ctx.fillRect(b.x + 6, b.y + 6, b.w - 12, b.h - 12);
-      // Rooftop details (AC units / vents) from the building seed.
-      const rng = U.mulberry32(Math.floor(b.seed * 1e9));
-      ctx.fillStyle = 'rgba(255,255,255,0.16)';
-      const n = 1 + Math.floor(rng() * 3);
-      for (let i = 0; i < n; i++) {
-        const ux = b.x + 12 + rng() * (b.w - 32);
-        const uy = b.y + 12 + rng() * (b.h - 32);
-        ctx.fillRect(ux, uy, 14, 10);
-      }
-      // Landmark label.
-      if (b.name) {
-        ctx.fillStyle = 'rgba(0,0,0,0.55)';
-        ctx.fillRect(b.x + 8, b.y + b.h / 2 - 11, ctx.measureText(b.name).width + 92, 22);
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 13px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('★ ' + b.name, b.x + b.w / 2, b.y + b.h / 2 + 5);
-      }
-    }
-    // Trees in parks.
-    for (const p of G.city.parks) {
-      const rng = U.mulberry32(7);
-      for (let i = 0; i < 14; i++) {
-        const tx = p.x + 20 + rng() * (p.w - 40);
-        const ty = p.y + 20 + rng() * (p.h - 40);
-        ctx.fillStyle = 'rgba(0,0,0,0.18)';
-        ctx.beginPath(); ctx.arc(tx + 4, ty + 5, 13, 0, U.TAU); ctx.fill();
-        ctx.fillStyle = '#4e8a3f';
-        ctx.beginPath(); ctx.arc(tx, ty, 13, 0, U.TAU); ctx.fill();
-        ctx.fillStyle = '#6fae52';
-        ctx.beginPath(); ctx.arc(tx - 3, ty - 3, 8, 0, U.TAU); ctx.fill();
-      }
-    }
+  function bindBuf(b) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, b.pos); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, b.nor); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, b.col); gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 0, 0);
   }
 
-  function drawMarker(cam) {
-    const m = G.missions.marker;
-    if (!m) return;
-    const pulse = 1 + Math.sin(G.time * 4) * 0.12;
-    // Beacon column.
-    const grad = ctx.createLinearGradient(m.x, m.y - 260, m.x, m.y);
-    grad.addColorStop(0, 'rgba(255,211,77,0)');
-    grad.addColorStop(1, 'rgba(255,211,77,0.35)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(m.x - 16, m.y - 260, 32, 260);
-    // Ground ring + arrow.
-    ctx.strokeStyle = '#ffd34d';
-    ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(m.x, m.y, 26 * pulse, 0, U.TAU); ctx.stroke();
-    ctx.fillStyle = '#ffd34d';
-    ctx.beginPath();
-    ctx.moveTo(m.x, m.y - 14); ctx.lineTo(m.x - 10, m.y + 8); ctx.lineTo(m.x + 10, m.y + 8);
-    ctx.closePath(); ctx.fill();
-    // Label.
-    ctx.font = 'bold 14px sans-serif';
-    ctx.textAlign = 'center';
-    const w = ctx.measureText(m.label).width + 18;
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(m.x - w / 2, m.y - 52, w, 22);
-    ctx.fillStyle = '#ffd34d';
-    ctx.fillText(m.label, m.x, m.y - 36);
+  function drawBoxAt(x, y, z, sx, sy, sz, yaw, tint, pitch = 0) {
+    let m = mat4Multiply(mat4Translate(x, y, z), mat4RotateY(yaw));
+    m = mat4Multiply(m, mat4Scale(sx, sy, sz));
+    gl.uniformMatrix4fv(uni.model, false, m);
+    gl.uniform3fv(uni.tint, tint);
+    gl.drawArrays(gl.TRIANGLES, 0, bufUnit.count);
   }
 
-  function drawPickups() {
-    for (const s of G.missions.stashes) {
-      if (s.taken) continue;
-      const bob = Math.sin(G.time * 3 + s.x) * 4;
-      ctx.fillStyle = '#ffd34d';
-      ctx.fillRect(s.x - 10, s.y - 7 + bob, 20, 14);
-      ctx.fillStyle = '#8a6d1f';
-      ctx.fillRect(s.x - 10, s.y - 7 + bob, 20, 4);
-      ctx.fillStyle = 'rgba(255,211,77,0.5)';
-      ctx.beginPath(); ctx.arc(s.x, s.y + bob, 18 + Math.sin(G.time * 3) * 4, 0, U.TAU); ctx.stroke();
+  function drawCar(car, isPolice) {
+    const body = car.color || [0.8, 0.2, 0.2];
+    const fx = Math.sin(car.angle), fz = Math.cos(car.angle);
+    const px = -fz, pz = fx; // side axis
+    drawBoxAt(car.x, 0.55, car.z, 2.0, 0.7, 4.4, car.angle, body);
+    drawBoxAt(car.x - fx * 0.3, 1.15, car.z - fz * 0.3, 1.7, 0.55, 2.2, car.angle, [0.12, 0.16, 0.20]);
+    const wheel = [0.08, 0.08, 0.09];
+    for (const [sx, sz] of [[-0.95, 1.4], [0.95, 1.4], [-0.95, -1.4], [0.95, -1.4]]) {
+      drawBoxAt(car.x + px * sx + fx * sz, 0.35, car.z + pz * sx + fz * sz, 0.3, 0.7, 0.7, car.angle, wheel);
     }
-    for (const pk of G.pickups) {
-      ctx.fillStyle = pk.kind === 'cash' ? '#3fce62' : '#ff5a5a';
-      ctx.beginPath(); ctx.arc(pk.x, pk.y, 7, 0, U.TAU); ctx.fill();
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 10px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(pk.kind === 'cash' ? '$' : '+', pk.x, pk.y + 3.5);
+    if (isPolice) {
+      drawBoxAt(car.x, 0.95, car.z, 1.9, 0.12, 0.6, car.angle, [1, 1, 1]);
+      drawBoxAt(car.x - fx * 0.2, 1.55, car.z - fz * 0.2, 0.5, 0.18, 0.4, car.angle, car.lightOn ? [1, 0.1, 0.1] : [0.1, 0.1, 0.6]);
+      drawBoxAt(car.x + fx * 0.2, 1.55, car.z + fz * 0.2, 0.5, 0.18, 0.4, car.angle, car.lightOn ? [0.1, 0.1, 1] : [0.6, 0.1, 0.1]);
     }
-  }
-
-  function drawCar(car) {
-    ctx.save();
-    ctx.translate(car.x, car.y);
-    ctx.rotate(car.angle);
-    // Shadow.
-    ctx.fillStyle = 'rgba(0,0,0,0.25)';
-    ctx.fillRect(-24, -12 + 4, 48, 26);
-    if (car.disabled) {
-      ctx.fillStyle = '#3a3a3a';
-      ctx.fillRect(-24, -13, 48, 26);
-      ctx.fillStyle = '#222';
-      ctx.fillRect(-10, -13, 20, 26);
-      ctx.restore();
-      return;
-    }
-    // Body.
-    ctx.fillStyle = car.color;
-    ctx.beginPath();
-    ctx.roundRect(-24, -13, 48, 26, 7);
-    ctx.fill();
-    // Hood / trunk shading.
-    ctx.fillStyle = 'rgba(255,255,255,0.14)';
-    ctx.fillRect(-24, -13, 12, 26);
-    // Cabin + windows.
-    ctx.fillStyle = '#1d2733';
-    ctx.beginPath();
-    ctx.roundRect(-6, -11, 18, 22, 4);
-    ctx.fill();
-    ctx.fillStyle = 'rgba(160,210,255,0.5)';
-    ctx.fillRect(-2, -9, 10, 18);
-    // Wheels.
-    ctx.fillStyle = '#151515';
-    ctx.fillRect(-17, -16, 10, 5); ctx.fillRect(-17, 11, 10, 5);
-    ctx.fillRect(8, -16, 10, 5); ctx.fillRect(8, 11, 10, 5);
-    // Headlights.
-    ctx.fillStyle = '#fff6b0';
-    ctx.fillRect(23, -10, 3, 5); ctx.fillRect(23, 5, 3, 5);
-    // Taxi sign / police livery.
-    if (car.type === 'taxi') {
-      ctx.fillStyle = '#f2c200';
-      ctx.fillRect(-4, -15, 10, 4);
-      ctx.fillStyle = '#111';
-      ctx.font = 'bold 6px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('TAXI', 1, -11.5);
-    }
-    if (car.type === 'police') {
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(-8, -13, 16, 26);
-      ctx.fillStyle = '#2f6fd0';
-      ctx.font = 'bold 7px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('PD', 0, 2);
-      // Flashing light bar.
-      const on = Math.floor(car.siren / 0.4) % 2 === 0;
-      ctx.fillStyle = on ? '#ff2e2e' : '#2e7bff';
-      ctx.beginPath(); ctx.arc(-2, 0, 5, 0, U.TAU); ctx.fill();
-      ctx.fillStyle = on ? '#2e7bff' : '#ff2e2e';
-      ctx.beginPath(); ctx.arc(6, 0, 5, 0, U.TAU); ctx.fill();
-    }
-    // SMPD callsign above named units.
-    if (car.unit) {
-      ctx.rotate(-car.angle);
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.font = 'bold 10px sans-serif';
-      ctx.textAlign = 'center';
-      const w = ctx.measureText(car.unit).width + 10;
-      ctx.fillRect(-w / 2, -30, w, 14);
-      ctx.fillStyle = '#ffd34d';
-      ctx.fillText(car.unit, 0, -19);
-    }
-    ctx.restore();
+    // Fake blob shadow.
+    drawBoxAt(car.x, 0.06, car.z, 2.2, 0.05, 4.6, car.angle, [0.05, 0.05, 0.06]);
   }
 
   function drawPed(p) {
-    const bob = p.state === 'walk' ? Math.sin(G.time * 10 + p.id) * 2 : 0;
-    ctx.save();
-    ctx.translate(p.x, p.y + bob * 0.3);
-    if (p.state === 'down') {
-      ctx.rotate(1.2);
-      ctx.fillStyle = p.color;
-      ctx.beginPath(); ctx.ellipse(0, 0, 13, 7, 0, 0, U.TAU); ctx.fill();
-      ctx.restore();
-      return;
-    }
-    // Shadow + body.
-    ctx.fillStyle = 'rgba(0,0,0,0.25)';
-    ctx.beginPath(); ctx.ellipse(2, 4, 9, 5, 0, 0, U.TAU); ctx.fill();
-    ctx.fillStyle = p.color;
-    ctx.beginPath(); ctx.arc(0, 0, 9, 0, U.TAU); ctx.fill();
-    // Head.
-    ctx.fillStyle = '#e8b98a';
-    ctx.beginPath(); ctx.arc(Math.cos(p.angle) * 3, Math.sin(p.angle) * 3 - 2, 5, 0, U.TAU); ctx.fill();
-    // Direction tick.
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(Math.cos(p.angle) * 12, Math.sin(p.angle) * 12);
-    ctx.stroke();
-    if (p.mission === 'guard') {
-      ctx.fillStyle = '#ff2e2e';
-      ctx.font = 'bold 11px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('!', 0, -14);
-    }
-    if (p.mission === 'courier') {
-      ctx.fillStyle = '#ffd34d';
-      ctx.font = 'bold 11px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('◆', 0, -14);
-    }
-    if (p.mission === 'tail') {
-      ctx.fillStyle = '#ffd34d';
-      ctx.font = 'bold 11px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('?', 0, -14);
-    }
-    ctx.restore();
+    const bob = p.moving ? Math.sin(state.time * 10 + p.phase) * 0.08 : 0;
+    drawBoxAt(p.x, 0.85 + bob, p.z, 0.7, 1.5, 0.45, p.angle, p.shirt);
+    drawBoxAt(p.x, 1.75 + bob, p.z, 0.45, 0.45, 0.45, p.angle, p.skin);
+    drawBoxAt(p.x, 0.06, p.z, 0.9, 0.05, 0.7, p.angle, [0.05, 0.05, 0.06]);
   }
 
-  function drawPlayer() {
-    const pl = G.player;
-    if (pl.dead) return;
-    if (pl.inCar) return; // drawn as the car
-    ctx.save();
-    ctx.translate(pl.x, pl.y);
-    // Shadow.
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-    ctx.beginPath(); ctx.ellipse(2, 5, 11, 6, 0, 0, U.TAU); ctx.fill();
-    const bob = pl.moving ? Math.sin(pl.walkPhase) * 1.5 : 0;
-    ctx.translate(0, bob * 0.4);
-    // White ring so the player always reads at a glance.
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.arc(0, 0, 14, 0, U.TAU); ctx.stroke();
-    // Body: red jacket (stands out), dark jeans.
-    ctx.fillStyle = '#d9382b';
-    ctx.beginPath(); ctx.arc(0, 0, 11, 0, U.TAU); ctx.fill();
-    ctx.fillStyle = '#22242e';
-    ctx.beginPath(); ctx.arc(Math.cos(pl.angle) * 4, Math.sin(pl.angle) * 4, 6, 0, U.TAU); ctx.fill();
-    // Head + facing.
-    ctx.fillStyle = '#e8b98a';
-    ctx.beginPath(); ctx.arc(Math.cos(pl.angle) * 5, Math.sin(pl.angle) * 5 - 1, 5.5, 0, U.TAU); ctx.fill();
-    ctx.fillStyle = '#2b2b2b';
-    ctx.beginPath(); ctx.arc(Math.cos(pl.angle) * 5, Math.sin(pl.angle) * 5 - 3, 5, Math.PI, 0); ctx.fill();
-    // Gun in hand.
-    if (pl.weapon !== 'fist') {
-      ctx.strokeStyle = '#1a1a1a';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(Math.cos(pl.angle) * 8, Math.sin(pl.angle) * 8);
-      ctx.lineTo(Math.cos(pl.angle) * 18, Math.sin(pl.angle) * 18);
-      ctx.stroke();
-    }
-    // Hurt flash.
-    if (pl.hurtCd > 0.25) {
-      ctx.strokeStyle = 'rgba(255,40,40,0.8)';
-      ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(0, 0, 15, 0, U.TAU); ctx.stroke();
-    }
-    ctx.restore();
+  function drawHeli(h) {
+    drawBoxAt(h.x, h.y, h.z, 3.2, 1.4, 6.0, h.angle, [0.15, 0.35, 0.45]);
+    drawBoxAt(h.x - Math.sin(h.angle) * 4, h.y + 0.3, h.z - Math.cos(h.angle) * 4, 0.8, 0.8, 4.5, h.angle, [0.12, 0.30, 0.40]);
+    const rotor = state.time * 18;
+    drawBoxAt(h.x, h.y + 0.9, h.z, 9, 0.08, 0.5, rotor, [0.2, 0.2, 0.2]);
+    // Searchlight cone (a translucent-looking pale box aimed down).
+    drawBoxAt(h.x, h.y - 6, h.z, 3.5, 12, 3.5, h.angle, [1.0, 0.95, 0.6]);
   }
 
-  function drawHeli() {
-    const heli = G.police.heli;
-    if (!heli || !heli.active) return;
-    // Searchlight pool on the ground.
-    ctx.fillStyle = 'rgba(255,224,138,0.18)';
-    ctx.beginPath(); ctx.arc(heli.x, heli.y, heli.searchR, 0, U.TAU); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,224,138,0.5)';
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(heli.x, heli.y, heli.searchR, 0, U.TAU); ctx.stroke();
-    // Body + tail + spinning rotor.
-    ctx.save();
-    ctx.translate(heli.x, heli.y);
-    ctx.fillStyle = 'rgba(0,0,0,0.25)';
-    ctx.beginPath(); ctx.ellipse(4, 6, 26, 14, 0, 0, U.TAU); ctx.fill();
-    ctx.rotate(heli.angle);
-    ctx.fillStyle = '#2f4d7d';
-    ctx.beginPath(); ctx.roundRect(-22, -11, 44, 22, 8); ctx.fill();
-    ctx.fillRect(-46, -4, 26, 8);
-    ctx.fillStyle = '#ffd34d';
-    ctx.font = 'bold 9px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('CONDOR-1', 0, 3);
-    ctx.rotate(heli.rotor - heli.angle);
-    ctx.strokeStyle = '#1a1a1a';
-    ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(-34, 0); ctx.lineTo(34, 0); ctx.stroke();
-    ctx.restore();
-  }
-
-  function drawParticles() {
-    // Skid marks (persistent, fading).
-    for (const s of G.skids) {
-      ctx.fillStyle = 'rgba(20,20,20,' + U.clamp(s.life / 6, 0, 0.55) + ')';
-      ctx.fillRect(s.x - 3, s.y - 2, 6, 4);
+  function render3D(view) {
+    const w = canvas.width, h = canvas.height;
+    gl.viewport(0, 0, w, h);
+    const sky = skyFor(view.hour);
+    gl.clearColor(sky.sky[0], sky.sky[1], sky.sky[2], 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    const proj = mat4Perspective(1.05, w / h, 0.5, 900);
+    const eye = view.camEye, tgt = view.camTarget;
+    const viewM = mat4LookAt(eye, tgt, [0, 1, 0]);
+    gl.useProgram(prog);
+    gl.uniformMatrix4fv(uni.proj, false, proj);
+    gl.uniformMatrix4fv(uni.view, false, viewM);
+    gl.uniform1f(uni.time, state.time);
+    gl.uniform3fv(uni.sun, sky.sun);
+    gl.uniform3fv(uni.fog, sky.fog);
+    gl.uniform3fv(uni.cam, eye);
+    gl.uniform1f(uni.fogNear, 90); gl.uniform1f(uni.fogFar, 420);
+    // Static world.
+    bindBuf(bufWorld);
+    gl.uniformMatrix4fv(uni.model, false, mat4Identity());
+    gl.uniform3fv(uni.tint, [1, 1, 1]);
+    gl.uniform1f(uni.water, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, bufWorld.count);
+    // Sea.
+    bindBuf(bufWater);
+    gl.uniform1f(uni.water, 1);
+    gl.drawArrays(gl.TRIANGLES, 0, bufWater.count);
+    gl.uniform1f(uni.water, 0);
+    // Dynamics share the unit box.
+    bindBuf(bufUnit);
+    for (const c of view.parked) drawCar(c, false);
+    for (const c of view.missionCars || []) drawCar(c, false);
+    for (const c of view.traffic) drawCar(c, false);
+    for (const c of view.policeCars) drawCar(c, true);
+    if (view.playerCar) drawCar(view.playerCar, false);
+    if (view.roadblock) for (const c of view.roadblock) drawCar(c, true);
+    for (const p of view.peds) drawPed(p);
+    if (view.playerOnFoot) drawPed(view.playerOnFoot);
+    if (view.heli) drawHeli(view.heli);
+    if (view.marker) {
+      const pulse = 1 + Math.sin(state.time * 4) * 0.15;
+      drawBoxAt(view.marker.x, 3.2, view.marker.z, 1.2 * pulse, 6.4, 1.2 * pulse, state.time, [1.0, 0.85, 0.1]);
+      drawBoxAt(view.marker.x, 0.15, view.marker.z, 5, 0.2, 5, 0, [1.0, 0.85, 0.1]);
     }
-    for (const pt of G.particles) {
-      ctx.fillStyle = pt.color;
-      ctx.globalAlpha = U.clamp(pt.life / pt.max, 0, 1);
-      ctx.beginPath(); ctx.arc(pt.x, pt.y, pt.size, 0, U.TAU); ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-    if (G.muzzle && G.muzzle.t > 0) {
-      ctx.fillStyle = '#ffe08a';
-      ctx.beginPath(); ctx.arc(G.muzzle.x, G.muzzle.y, 7, 0, U.TAU); ctx.fill();
+    for (const pt of view.particles || []) {
+      drawBoxAt(pt.x, pt.y, pt.z, pt.s, pt.s, pt.s, 0, pt.color);
     }
   }
 
-  function drawLight(cam) {
-    // Warm sun wash + vignette for the sun-soaked look, plus a day/night
-    // tint from the game clock (golden hour, then a blue night).
-    const { x0, y0, x1, y1 } = cam.view;
-    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-    const r = Math.max(x1 - x0, y1 - y0) * 0.75;
-    const g = ctx.createRadialGradient(cx, cy, r * 0.35, cx, cy, r);
-    g.addColorStop(0, 'rgba(255,220,150,0.05)');
-    g.addColorStop(1, 'rgba(20,10,40,0.20)');
-    ctx.fillStyle = g;
-    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-    const mins = G.clockMin || 600;
-    const dayF = U.clamp(Math.sin(Math.PI * (mins - 360) / 720), 0, 1);
-    if (dayF < 1) {
-      const night = (1 - dayF) * 0.42;
-      ctx.fillStyle = 'rgba(10,16,48,' + night.toFixed(3) + ')';
-      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-    }
-    if ((mins > 960 && mins < 1140) || (mins > 300 && mins < 420)) {
-      ctx.fillStyle = 'rgba(255,140,60,0.10)';
-      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-    }
+  function render2D(view) {
+    const w = canvas.width, h = canvas.height;
+    ctx2d.fillStyle = '#1a2b3c'; ctx2d.fillRect(0, 0, w, h);
+    const s = Math.min(w, h) / 480; // world units per px scale
+    const cx = view.focus.x, cz = view.focus.z;
+    const X = (x) => w / 2 + (x - cx) * s, Z = (z) => h / 2 + (z - cz) * s;
+    ctx2d.fillStyle = '#8a7a5a'; ctx2d.fillRect(0, 0, w, h);
+    ctx2d.fillStyle = '#202024';
+    for (const rx of city.roadsX) ctx2d.fillRect(X(rx - 6), 0, 12 * s, h);
+    for (const rz of city.roadsZ) ctx2d.fillRect(0, Z(rz - 6), w, 12 * s);
+    ctx2d.fillStyle = '#c9b183';
+    for (const b of city.buildings) ctx2d.fillRect(X(b.x - b.w / 2), Z(b.z - b.d / 2), b.w * s, b.d * s);
+    ctx2d.fillStyle = '#141210'; ctx2d.fillRect(0, Z(BEACH_Z), w, h - Z(BEACH_Z));
+    ctx2d.fillStyle = '#0e4d7a'; ctx2d.fillRect(0, Z(WATER_Z), w, h - Z(WATER_Z));
+    const dot = (x, z, r, col) => { ctx2d.fillStyle = col; ctx2d.beginPath(); ctx2d.arc(X(x), Z(z), r, 0, 7); ctx2d.fill(); };
+    for (const c of view.traffic) dot(c.x, c.z, 4, '#ddd');
+    for (const c of view.policeCars) dot(c.x, c.z, 5, '#2266ff');
+    for (const p of view.peds) dot(p.x, p.z, 2.5, '#f5d0a0');
+    if (view.playerCar) dot(view.playerCar.x, view.playerCar.z, 6, '#ffcc00');
+    if (view.playerOnFoot) dot(view.playerOnFoot.x, view.playerOnFoot.z, 5, '#ffcc00');
+    if (view.marker) { ctx2d.strokeStyle = '#ffcc00'; ctx2d.lineWidth = 3; ctx2d.beginPath(); ctx2d.arc(X(view.marker.x), Z(view.marker.z), 10 + Math.sin(state.time * 4) * 3, 0, 7); ctx2d.stroke(); }
+    if (view.heli) dot(view.heli.x, view.heli.z, 7, '#66ccff');
+    ctx2d.fillStyle = '#fff'; ctx2d.font = 'bold 16px sans-serif';
+    ctx2d.fillText('CALDERA VIVA — mode top-down 2D (fallback WebGL)', 14, 104);
   }
 
-  function draw(cam) {
-    ctx.save();
-    // Camera transform with shake.
-    const shx = (Math.random() - 0.5) * cam.shake * 14;
-    const shy = (Math.random() - 0.5) * cam.shake * 14;
-    const vw = G.viewW, vh = G.viewH;
-    const zx = vw / 2 - cam.x * cam.zoom + shx;
-    const zy = vh / 2 - cam.y * cam.zoom + shy;
-    ctx.setTransform(G.dpr * cam.zoom, 0, 0, G.dpr * cam.zoom, G.dpr * zx, G.dpr * zy);
-    cam.view = {
-      x0: cam.x - vw / 2 / cam.zoom - 40,
-      y0: cam.y - vh / 2 / cam.zoom - 40,
-      x1: cam.x + vw / 2 / cam.zoom + 40,
-      y1: cam.y + vh / 2 / cam.zoom + 40,
-    };
-    drawGround(cam);
-    drawRoads(cam);
-    drawBuildings(cam);
-    drawMarker(cam);
-    drawPickups();
-    drawParticles();
-    // Cars sorted by y for a hint of depth.
-    const cars = G.vehicles.cars.slice().sort((a, b) => a.y - b.y);
-    for (const c of cars) drawCar(c);
-    for (const p of G.peds.list) drawPed(p);
-    for (const c of G.police.cops) drawPed(c);
-    drawPlayer();
-    drawHeli();
-    drawLight(cam);
-    ctx.restore();
-    // Reset transform for HUD (drawn in screen space).
-    ctx.setTransform(G.dpr, 0, 0, G.dpr, 0, 0);
-  }
+  return {
+    get mode() { return state.mode; },
+    get camMode() { return state.camMode; },
+    setCamMode(m) { state.camMode = m; },
+    resize(w, h) { canvas.width = w; canvas.height = h; },
+    render(view, dt) {
+      state.time += dt;
+      if (state.mode === '3d') render3D(view); else render2D(view);
+    },
+  };
+}
 
-  return { draw };
+// Compute the chase / iso camera for the current focus (player pos + heading).
+export function computeCamera(focus, heading, camMode, orbitYaw, dt, prev) {
+  let eye, target = [focus.x, 1.6, focus.z];
+  if (camMode === 'iso') {
+    eye = [focus.x + 42, 46, focus.z + 42];
+  } else if (camMode === 'high') {
+    eye = [focus.x - Math.sin(heading) * 16, 26, focus.z - Math.cos(heading) * 16];
+    target = [focus.x + Math.sin(heading) * 14, 0, focus.z + Math.cos(heading) * 14];
+  } else {
+    const yaw = heading + Math.PI + orbitYaw;
+    const dist = 13, height = 6.2;
+    eye = [
+      focus.x + Math.sin(yaw) * dist,
+      height,
+      focus.z + Math.cos(yaw) * dist,
+    ];
+    target = [focus.x + Math.sin(heading) * 9, 1.8, focus.z + Math.cos(heading) * 9];
+  }
+  // First frame: snap straight to the computed pose instead of swooping in
+  // from a bogus origin (which also put the camera inside buildings).
+  if (!prev) return { eye: eye.slice(), target: target.slice() };
+  const out = prev;
+  const k = 1 - Math.pow(0.0001, dt); // frame-rate independent smoothing
+  out.eye[0] = lerp(out.eye[0], eye[0], k); out.eye[1] = lerp(out.eye[1], eye[1], k); out.eye[2] = lerp(out.eye[2], eye[2], k);
+  out.target[0] = lerp(out.target[0], target[0], k); out.target[1] = lerp(out.target[1], target[1], k); out.target[2] = lerp(out.target[2], target[2], k);
+  out.eye[1] = Math.max(out.eye[1], 2.2);
+  return out;
 }

@@ -1,81 +1,91 @@
-// SOLMAR HEAT 3D — utils.js
-// Small math, random and formatting helpers shared by every system.
-// No dependencies. Deterministic helpers (mulberry32) keep the city
-// layout identical on every load; the rest is plain arcade math.
-const U = {
-  TAU: Math.PI * 2,
-  clamp(v, a, b) { return v < a ? a : v > b ? b : v; },
-  lerp(a, b, t) { return a + (b - a) * t; },
-  dist(x1, y1, x2, y2) { const dx = x2 - x1, dy = y2 - y1; return Math.sqrt(dx * dx + dy * dy); },
-  dist2(x1, y1, x2, y2) { const dx = x2 - x1, dy = y2 - y1; return dx * dx + dy * dy; },
-  angleTo(x1, y1, x2, y2) { return Math.atan2(y2 - y1, x2 - x1); },
-  angleDiff(a, b) {
-    let d = (b - a) % (Math.PI * 2);
-    if (d > Math.PI) d -= Math.PI * 2;
-    if (d < -Math.PI) d += Math.PI * 2;
-    return d;
-  },
-  angleLerp(a, b, t) { return a + U.angleDiff(a, b) * t; },
-  rand(a, b) { return a + Math.random() * (b - a); },
-  randi(a, b) { return Math.floor(U.rand(a, b + 1)); },
-  pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; },
-  chance(p) { return Math.random() < p; },
-  // Deterministic RNG (mulberry32) so the city layout is identical every load.
-  mulberry32(seed) {
-    let s = seed >>> 0;
-    return function () {
-      s = (s + 0x6D2B79F5) >>> 0;
-      let t = s;
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  },
-  // Circle vs axis-aligned rect: push the circle out, return true on overlap.
-  circleRectResolve(p, r, rect) {
-    const nx = U.clamp(p.x, rect.x, rect.x + rect.w);
-    const ny = U.clamp(p.y, rect.y, rect.y + rect.h);
-    const dx = p.x - nx, dy = p.y - ny;
-    const d2 = dx * dx + dy * dy;
-    if (d2 >= r * r) return false;
-    if (d2 > 0.0001) {
-      const d = Math.sqrt(d2);
-      p.x = nx + (dx / d) * r;
-      p.y = ny + (dy / d) * r;
-    } else {
-      // Center inside the rect: push out along the smallest penetration axis.
-      const left = p.x - rect.x, right = rect.x + rect.w - p.x;
-      const top = p.y - rect.y, bottom = rect.y + rect.h - p.y;
-      const m = Math.min(left, right, top, bottom);
-      if (m === left) p.x = rect.x - r;
-      else if (m === right) p.x = rect.x + rect.w + r;
-      else if (m === top) p.y = rect.y - r;
-      else p.y = rect.y + rect.h + r;
-    }
-    return true;
-  },
-  pointInRect(x, y, rect) {
-    return x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
-  },
-  // Nice number formatting for the HUD.
-  money(n) { return '$' + Math.floor(n).toLocaleString('en-US'); },
-  // Game-clock formatting: minutes since midnight -> "14:05".
-  clock(mins) {
-    const m = Math.floor(mins) % 1440;
-    const h = Math.floor(m / 60), mm = m % 60;
-    return String(h).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
-  },
-  // Hex color string -> [r, g, b] floats 0..1, for the WebGL renderer.
-  hexRgb(hex) {
-    const n = parseInt(hex.slice(1), 16);
-    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-  },
-  // Shade a hex color by a 0..1 factor (lighting on 3D faces).
-  shade(hex, f) {
-    const c = U.hexRgb(hex);
-    const r = Math.round(U.clamp(c[0] * f, 0, 1) * 255);
-    const g = Math.round(U.clamp(c[1] * f, 0, 1) * 255);
-    const b = Math.round(U.clamp(c[2] * f, 0, 1) * 255);
-    return 'rgb(' + r + ',' + g + ',' + b + ')';
-  },
-};
+// utils.js — small deterministic helpers for CALDERA VIVA.
+// No external code: every helper here is written for this game.
+
+export function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+export function lerp(a, b, t) { return a + (b - a) * t; }
+export function dist2(ax, az, bx, bz) { const dx = ax - bx, dz = az - bz; return dx * dx + dz * dz; }
+export function dist(ax, az, bx, bz) { return Math.sqrt(dist2(ax, az, bx, bz)); }
+
+export function angleLerp(a, b, t) {
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return a + d * t;
+}
+
+export function angleDiff(a, b) {
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+export function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
+export function range(rng, lo, hi) { return lo + rng() * (hi - lo); }
+export function fmtCash(n) { return '$' + Math.floor(n).toLocaleString('en-US'); }
+export function fmtTime(h) {
+  const hh = Math.floor(h) % 24, mm = Math.floor((h % 1) * 60);
+  return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+}
+
+// Minimal mat4 helpers (column-major, WebGL style), written for this renderer.
+export function mat4Identity() {
+  return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+}
+export function mat4Multiply(a, b) {
+  const o = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+  }
+  return o;
+}
+export function mat4Perspective(fovY, aspect, near, far) {
+  const f = 1 / Math.tan(fovY / 2), nf = 1 / (near - far);
+  const o = new Float32Array(16);
+  o[0] = f / aspect; o[5] = f; o[10] = (far + near) * nf; o[11] = -1; o[14] = 2 * far * near * nf;
+  return o;
+}
+export function mat4LookAt(eye, center, up) {
+  let zx = eye[0] - center[0], zy = eye[1] - center[1], zz = eye[2] - center[2];
+  let len = Math.hypot(zx, zy, zz) || 1; zx /= len; zy /= len; zz /= len;
+  let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+  len = Math.hypot(xx, xy, xz) || 1; xx /= len; xy /= len; xz /= len;
+  const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+  const o = new Float32Array(16);
+  o[0] = xx; o[1] = yx; o[2] = zx; o[3] = 0;
+  o[4] = xy; o[5] = yy; o[6] = zy; o[7] = 0;
+  o[8] = xz; o[9] = yz; o[10] = zz; o[11] = 0;
+  o[12] = -(xx * eye[0] + xy * eye[1] + xz * eye[2]);
+  o[13] = -(yx * eye[0] + yy * eye[1] + yz * eye[2]);
+  o[14] = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
+  o[15] = 1;
+  return o;
+}
+export function mat4Translate(x, y, z) {
+  const o = mat4Identity(); o[12] = x; o[13] = y; o[14] = z; return o;
+}
+export function mat4Scale(sx, sy, sz) {
+  const o = mat4Identity(); o[0] = sx; o[5] = sy; o[10] = sz; return o;
+}
+export function mat4RotateY(a) {
+  const c = Math.cos(a), s = Math.sin(a), o = mat4Identity();
+  o[0] = c; o[2] = -s; o[8] = s; o[10] = c; return o;
+}
+export function mat4RotateX(a) {
+  const c = Math.cos(a), s = Math.sin(a), o = mat4Identity();
+  o[5] = c; o[6] = s; o[9] = -s; o[10] = c; return o;
+}
+export function mat4RotateZ(a) {
+  const c = Math.cos(a), s = Math.sin(a), o = mat4Identity();
+  o[0] = c; o[1] = s; o[4] = -s; o[5] = c; return o;
+}

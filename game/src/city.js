@@ -1,188 +1,144 @@
-// SOLMAR HEAT 3D — city.js
-// Generates ISLA SOLMAR, a volcanic island city: a sun-soaked coastal
-// grid with avenues, streets, blocks of buildings, parks, a beach and
-// the sea to the east, Mount Ember (a smoking volcano) in the north-west
-// and the Ember Lighthouse at the southern tip of the beach. Deterministic
-// (seeded), so every load builds the same island. Also answers collision,
-// placement and district queries for the rest of the game.
-function createCity() {
-  const W = 3200, H = 2400;
-  const ROAD_W = 96;
-  const rng = U.mulberry32(20261120);
+// city.js — Isla Caldera: the seeded procedural island of CALDERA VIVA.
+// Puerto Brasa (coastal town), the Boardwalk, the Dermaga pier, Bukit Caldera
+// (volcano hill), Kota Tua (old town). All geometry is generated from one
+// fixed seed, so every player loads the same island.
 
-  // Avenue (vertical) and street (horizontal) center lines.
-  const roadsV = [220, 620, 1020, 1420, 1820, 2220, 2620];
-  const roadsH = [220, 620, 1020, 1420, 1820, 2180];
+import { mulberry32, range, pick } from './utils.js';
 
-  // Named districts, resolved from a world position (HUD + minimap + standing).
-  const DISTRICTS = [
-    { name: 'Ember Hills', x0: 0, y0: 0, x1: 1000, y1: 800 },
-    { name: 'The Docks', x0: 2000, y0: 0, x1: 2920, y1: 800 },
-    { name: 'Downtown', x0: 1000, y0: 0, x1: 2000, y1: 1200 },
-    { name: 'Palm Court', x0: 2000, y0: 1200, x1: 2920, y1: 2400 },
-    { name: 'Solmar Beach', x0: 2920, y0: 0, x1: 3200, y1: 2400 },
-  ];
-  function districtAt(x, y) {
-    for (const d of DISTRICTS) {
-      if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d.name;
-    }
-    return 'Downtown';
-  }
+export const WORLD_SEED = 20261124;
+export const WORLD_BOUND = 218;      // playable half-extent (x and z)
+export const BEACH_Z = 178;          // south of this: black-sand beach
+export const WATER_Z = 206;          // south of this: open sea
 
-  const buildings = [];
-  const parks = [];
-  const PALETTES = [
-    ['#e8b48a', '#d99a6c', '#c97e4e'], // warm terracotta
-    ['#f2d8a7', '#eac07c', '#ddb26a'], // sand
-    ['#b8c4d4', '#9fb0c8', '#8498b8'], // cool blue-grey
-    ['#e6a3b8', '#d98aa5', '#c9748f'], // rose
-    ['#a8c8a0', '#8fb585', '#77a06d'], // sage
-    ['#d8c8e8', '#c2aede', '#ab94cf'], // lavender
-  ];
-  function buildingColor() {
-    const pal = U.pick(PALETTES);
-    return U.pick(pal);
-  }
+const PALETTE = {
+  stucco: [[0.92, 0.78, 0.62], [0.85, 0.62, 0.48], [0.78, 0.72, 0.58], [0.95, 0.85, 0.70]],
+  pastel: [[0.95, 0.62, 0.55], [0.55, 0.78, 0.85], [0.98, 0.82, 0.45], [0.62, 0.80, 0.60], [0.90, 0.55, 0.65]],
+  roof: [[0.55, 0.25, 0.18], [0.35, 0.30, 0.28], [0.20, 0.35, 0.42], [0.65, 0.45, 0.30]],
+  glass: [0.35, 0.55, 0.65],
+};
 
-  // Blocks between roads. Leave the beach strip (x > 2920) and the park block free.
-  const parkBlock = { bx: 4, by: 2 }; // block indices (avenue 4..5, street 2..3)
-  for (let bi = 0; bi < roadsV.length - 1; bi++) {
-    for (let bj = 0; bj < roadsH.length - 1; bj++) {
-      const x0 = roadsV[bi] + ROAD_W / 2 + 14;
-      const x1 = roadsV[bi + 1] - ROAD_W / 2 - 14;
-      const y0 = roadsH[bj] + ROAD_W / 2 + 14;
-      const y1 = roadsH[bj + 1] - ROAD_W / 2 - 14;
-      if (bi === parkBlock.bx && bj === parkBlock.by) {
-        parks.push({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 });
-        continue;
+export const DISTRICTS = [
+  { id: 'brasa', name: 'Puerto Brasa', x0: -90, z0: -60, x1: 90, z1: 90, color: '#e8a34c' },
+  { id: 'boardwalk', name: 'Boardwalk', x0: -140, z0: 90, x1: 140, z1: 178, color: '#ff7a9e' },
+  { id: 'dermaga', name: 'Dermaga', x0: 90, z0: -60, x1: 218, z1: 178, color: '#5ec8d8' },
+  { id: 'bukit', name: 'Bukit Caldera', x0: -218, z0: -218, x1: 218, z1: -60, color: '#b08968' },
+  { id: 'tuo', name: 'Kota Tua', x0: -218, z0: -60, x1: -90, z1: 178, color: '#d8c25e' },
+];
+
+export function districtAt(x, z) {
+  for (const d of DISTRICTS) if (x >= d.x0 && x < d.x1 && z >= d.z0 && z < d.z1) return d;
+  if (z >= BEACH_Z) return DISTRICTS[1];
+  return DISTRICTS[0];
+}
+
+export function buildCity() {
+  const rng = mulberry32(WORLD_SEED);
+  const roadsX = [-180, -135, -90, -45, 0, 45, 90, 135, 180];
+  const roadsZ = [-180, -135, -90, -45, 0, 45, 90, 135, 180];
+  const buildings = [];   // {x,z,w,d,h,color,roof}
+  const colliders = [];   // {minX,maxX,minZ,maxZ}
+  const trees = [];       // {x,z,s}
+  const lamps = [];       // {x,z}
+  const parked = [];      // {x,z,angle,color}
+  const plazas = [];
+
+  // Buildings fill the blocks between roads; a few blocks stay open as plazas.
+  for (let ix = 0; ix < roadsX.length - 1; ix++) {
+    for (let iz = 0; iz < roadsZ.length - 1; iz++) {
+      const x0 = roadsX[ix] + 8, x1 = roadsX[ix + 1] - 8;
+      const z0 = roadsZ[iz] + 8, z1 = roadsZ[iz + 1] - 8;
+      const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+      if (z0 > BEACH_Z - 10) continue; // beach stays open
+      const roll = rng();
+      if (roll < 0.10) { plazas.push({ x: cx, z: cz, w: x1 - x0, d: z1 - z0 }); continue; }
+      const n = roll < 0.45 ? 1 : roll < 0.8 ? 2 : 4;
+      for (let k = 0; k < n; k++) {
+        const w = (x1 - x0) / (n === 1 ? 1 : 2) - 4;
+        const d = (z1 - z0) / (n <= 2 ? 1 : 2) - 4;
+        const bx = n === 1 ? cx : x0 + w / 2 + 2 + (k % 2) * (w + 4);
+        const bz = n <= 2 ? cz : z0 + d / 2 + 2 + Math.floor(k / 2) * (d + 4);
+        const nearCenter = Math.abs(bx) < 100 && Math.abs(bz) < 100;
+        const h = nearCenter ? range(rng, 14, 42) : range(rng, 7, 22);
+        const color = pick(rng, Math.abs(bx) < 60 ? PALETTE.pastel : PALETTE.stucco);
+        const roof = pick(rng, PALETTE.roof);
+        buildings.push({ x: bx, z: bz, w, d, h, color, roof });
+        colliders.push({ minX: bx - w / 2, maxX: bx + w / 2, minZ: bz - d / 2, maxZ: bz + d / 2 });
       }
-      // Split each block into 1-4 buildings with small gaps.
-      const cols = rng() < 0.5 ? 2 : 1;
-      const rows = rng() < 0.5 ? 2 : 1;
-      const cw = (x1 - x0) / cols, ch = (y1 - y0) / rows;
-      for (let c = 0; c < cols; c++) {
-        for (let r = 0; r < rows; r++) {
-          if (rng() < 0.12) continue; // empty lot / parking
-          const bx = x0 + c * cw + 8, by = y0 + r * ch + 8;
-          const bw = cw - 16, bh = ch - 16;
-          if (bw < 40 || bh < 40) continue;
-          buildings.push({
-            x: bx, y: by, w: bw, h: bh,
-            color: buildingColor(),
-            roof: rng() < 0.5 ? '#5a5148' : '#6e6258',
-            h: U.randi(6, 26), // fake height for the shadow offset / 3D extrusion
-            seed: rng(),
-          });
-        }
-      }
+      // A palm or two on the block corners.
+      if (rng() < 0.7) trees.push({ x: x0 + 3, z: z0 + 3, s: range(rng, 1.6, 2.6) });
+      if (rng() < 0.5) trees.push({ x: x1 - 3, z: z1 - 3, s: range(rng, 1.6, 2.4) });
     }
   }
 
-  // Beach + sea along the east edge.
-  const beach = { x: 2920, y: 0, w: 130, h: H };
-  const water = { x: 3050, y: 0, w: 150, h: H };
+  // Street lamps along every road, both sides.
+  for (const rx of roadsX) for (let z = -180; z <= 180; z += 45) { lamps.push({ x: rx + 7, z }); lamps.push({ x: rx - 7, z: z + 22 }); }
+  for (const rz of roadsZ) for (let x = -180; x <= 180; x += 45) { lamps.push({ x, z: rz + 7 }); }
 
-  // Mount Ember: the smoking volcano in the north-west corner, outside the
-  // road grid. The observatory road-end sits at its foot.
-  const volcano = { x: 150, y: 130, r: 210, peak: 260 };
-  // Ember Lighthouse: striped tower at the southern tip of the beach.
-  const lighthouse = { x: 2985, y: 2260, r: 26, h: 150 };
+  // Parked cars along the boardwalk and the main avenue.
+  const carColors = [[0.85, 0.15, 0.15], [0.15, 0.35, 0.75], [0.95, 0.85, 0.25], [0.25, 0.75, 0.35], [0.85, 0.85, 0.85], [0.15, 0.15, 0.18], [0.95, 0.45, 0.10]];
+  for (let i = 0; i < 26; i++) {
+    const onBoardwalk = i < 12;
+    parked.push({
+      x: onBoardwalk ? range(rng, -120, 120) : range(rng, -170, 170),
+      z: onBoardwalk ? 168 + (rng() < 0.5 ? 4 : -4) : (rng() < 0.5 ? 7 : -7) + pick(rng, roadsZ),
+      angle: onBoardwalk ? 0 : (rng() < 0.5 ? 0 : Math.PI / 2),
+      color: pick(rng, carColors),
+    });
+  }
 
-  // Landmarks: named buildings the story and missions use.
-  function landmarkAt(bx, by, name, tint) {
-    // Find the building nearest a block corner and claim it.
-    let best = null, bestD = 1e9;
-    for (const b of buildings) {
-      const d = U.dist2(b.x + b.w / 2, b.y + b.h / 2, bx, by);
-      if (d < bestD) { bestD = d; best = b; }
-    }
-    if (best) { best.name = name; best.color = tint; }
-    return best;
-  }
-  const landmarks = {};
-  landmarks.garage = landmarkAt(620, 620, "Nadia's Garage", '#c9748f');
-  landmarks.hospital = landmarkAt(2220, 220, 'Solmar General', '#e8e8e8');
-  landmarks.police = landmarkAt(1420, 220, 'Solmar PD', '#8498b8');
-  landmarks.bank = landmarkAt(1820, 1020, 'Solmar Reserve', '#ddb26a');
-  landmarks.motel = landmarkAt(2620, 1820, 'Palm Court Motel', '#e8b48a');
-  landmarks.docks = landmarkAt(2620, 220, 'Solmar Docks', '#9fb0c8');
-  landmarks.safehouse = landmarkAt(620, 1820, 'Safehouse', '#a8c8a0');
-  landmarks.respray = landmarkAt(1020, 1820, 'Turbo Respray', '#d98aa5');
-  // A parking garage for mission 4 (the package).
-  landmarks.parking = landmarkAt(2220, 1420, 'Harbor Parking', '#6e6258');
-  // Ember Jewels, the glass-fronted jeweller in Downtown (mission 8).
-  landmarks.jewels = landmarkAt(1420, 1020, 'Ember Jewels', '#e8d5a0');
-  // The observatory at the foot of Mount Ember (mission 9 finale).
-  landmarks.observatory = landmarkAt(220, 220, 'Ember Observatory', '#b8c4d4');
-
-  function isRoad(x, y) {
-    if (x < 0 || y < 0 || x > W || y > H) return false;
-    for (const rx of roadsV) if (Math.abs(x - rx) <= ROAD_W / 2) return true;
-    for (const ry of roadsH) if (Math.abs(y - ry) <= ROAD_W / 2) return true;
-    return false;
-  }
-  function isWater(x, y) {
-    return x >= water.x && x <= water.x + water.w && y >= 0 && y <= H;
-  }
-  function isBeach(x, y) {
-    return x >= beach.x && x < water.x && y >= 0 && y <= H;
-  }
-  function buildingAt(x, y) {
-    for (const b of buildings) {
-      if (U.pointInRect(x, y, b)) return b;
-    }
-    return null;
-  }
-  // Push a circle (player, car, ped) out of buildings, the volcano and water.
-  function resolveCircle(p, r) {
-    let hit = false;
-    for (const b of buildings) {
-      if (U.circleRectResolve(p, r, b)) hit = true;
-    }
-    // Mount Ember is solid rock: keep everyone off the cone.
-    const dv = U.dist(p.x, p.y, volcano.x, volcano.y);
-    if (dv < volcano.r * 0.55 + r) {
-      const a = Math.atan2(p.y - volcano.y, p.x - volcano.x);
-      p.x = volcano.x + Math.cos(a) * (volcano.r * 0.55 + r);
-      p.y = volcano.y + Math.sin(a) * (volcano.r * 0.55 + r);
-      hit = true;
-    }
-    // Water blocks movement (except the beach edge).
-    if (p.x + r > water.x) { p.x = water.x - r; hit = true; }
-    if (p.x - r < 0) { p.x = r; hit = true; }
-    if (p.y - r < 0) { p.y = r; hit = true; }
-    if (p.y + r > H) { p.y = H - r; hit = true; }
-    return hit;
-  }
-  function roadPoint() {
-    if (U.chance(0.5)) {
-      return { x: U.pick(roadsV) + U.rand(-28, 28), y: U.rand(120, H - 120), vertical: true };
-    }
-    return { x: U.rand(120, 2860), y: U.pick(roadsH) + U.rand(-28, 28), vertical: false };
-  }
-  function sidewalkPoint() {
-    const p = roadPoint();
-    const off = ROAD_W / 2 + U.rand(8, 26);
-    if (p.vertical) return { x: p.x + (U.chance(0.5) ? off : -off), y: p.y };
-    return { x: p.x, y: p.y + (U.chance(0.5) ? off : -off) };
-  }
-  function pointNear(x, y, rMin, rMax) {
-    for (let i = 0; i < 40; i++) {
-      const a = U.rand(0, U.TAU), d = U.rand(rMin, rMax);
-      const px = x + Math.cos(a) * d, py = y + Math.sin(a) * d;
-      if (px < 80 || py < 80 || px > 2880 || py > H - 80) continue;
-      if (isRoad(px, py) && !buildingAt(px, py)) return { x: px, y: py };
-    }
-    return roadPoint();
-  }
-  function buildingCenter(b) {
-    return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
-  }
+  // Landmarks and mission anchors (fixed, hand-placed, not random).
+  const landmarks = {
+    garage: { x: -52, z: 97, name: 'Garage Tito — markas' },
+    maraHouse: { x: 12, z: 52, name: 'Rumah Mara' },
+    pier: { x: 30, z: 196, name: 'Dermaga' },
+    containerYard: { x: 150, z: 60, name: 'Lapangan Kontainer' },
+    parkingDeck: { x: -110, z: -20, name: 'Gedung Parkir' },
+    warehouse: { x: 160, z: -110, name: 'Gudang Garam' },
+    mansion: { x: -150, z: -150, name: 'Mansion Kartel' },
+    impound: { x: 120, z: -140, name: 'Impound GIC' },
+    boardwalk: { x: 0, z: 150, name: 'Boardwalk' },
+    plaza: { x: 0, z: 0, name: 'Plaza Brasa' },
+    bridge: { x: 0, z: -90, name: 'Jembatan Caldera' },
+    boat: { x: 30, z: 232, name: 'Perahu Kabur' },
+  };
 
   return {
-    W, H, ROAD_W, roadsV, roadsH, buildings, parks, beach, water, landmarks,
-    volcano, lighthouse, districts: DISTRICTS, districtAt,
-    isRoad, isWater, isBeach, buildingAt, resolveCircle,
-    roadPoint, sidewalkPoint, pointNear, buildingCenter,
+    seed: WORLD_SEED, roadsX, roadsZ, buildings, colliders, trees, lamps, parked,
+    plazas, landmarks, districts: DISTRICTS,
   };
+}
+
+// Push a circle (x,z,r) out of every building AABB it overlaps. Returns true on hit.
+export function collideCircle(city, pos, r) {
+  let hit = false;
+  for (const c of city.colliders) {
+    const nx = Math.max(c.minX, Math.min(pos.x, c.maxX));
+    const nz = Math.max(c.minZ, Math.min(pos.z, c.maxZ));
+    const dx = pos.x - nx, dz = pos.z - nz;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < r * r) {
+      hit = true;
+      if (d2 > 0.0001) {
+        const d = Math.sqrt(d2);
+        pos.x = nx + (dx / d) * r; pos.z = nz + (dz / d) * r;
+      } else {
+        // Center inside the box: push out along the smallest penetration axis.
+        const pl = pos.x - c.minX, pr = c.maxX - pos.x, pt = pos.z - c.minZ, pb = c.maxZ - pos.z;
+        const m = Math.min(pl, pr, pt, pb);
+        if (m === pl) pos.x = c.minX - r; else if (m === pr) pos.x = c.maxX + r;
+        else if (m === pt) pos.z = c.minZ - r; else pos.z = c.maxZ + r;
+      }
+    }
+  }
+  pos.x = Math.max(-WORLD_BOUND, Math.min(WORLD_BOUND, pos.x));
+  // South edge: the Dermaga pier (x 15..45) is walkable out to z 240; the
+  // open sea beside it stops at the beach.
+  const zMax = pos.x > 15 && pos.x < 45 ? 240 : WORLD_BOUND;
+  pos.z = Math.max(-WORLD_BOUND, Math.min(zMax, pos.z));
+  return hit;
+}
+
+export function pointInCollider(city, x, z) {
+  for (const c of city.colliders) if (x >= c.minX && x <= c.maxX && z >= c.minZ && z <= c.maxZ) return true;
+  return false;
 }
